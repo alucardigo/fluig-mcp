@@ -1,59 +1,76 @@
-# Security
+# Política de Segurança
 
-## What this tool can do
+## Reportar uma vulnerabilidade
 
-Be clear-eyed about the blast radius before wiring this into an agent. With write tools enabled,
-whatever drives this server can:
+Abra um [Security Advisory privado](https://github.com/alucardigo/fluig-mcp/security/advisories/new)
+no GitHub. **Não abra issue pública** para falha de segurança.
 
-- run arbitrary SQL against the Fluig database, and against TOTVS RM if a datasource exists;
-- create, overwrite and delete custom datasets;
-- publish new versions of forms and of BPM process definitions;
-- **delete process versions — and deleting the last version removes the whole process
-  definition**;
-- start, move and cancel process instances, acting as the configured user;
-- issue an authenticated `POST` to any endpoint of the platform.
+Inclua: o que acontece, como reproduzir, e o impacto que você enxerga. Respondo em até 7 dias
+corridos. Se concordarmos que é vulnerabilidade, publico a correção e credito você no advisory —
+a menos que prefira não ser citado.
 
-None of that is a bug. It is the point of the tool, and it is why the defaults are conservative.
+## Modelo de ameaça
 
-## Guard rails
+Este servidor é uma ponte entre um agente de IA e um Fluig real. Isso significa que ele pode
+**ler dados de negócio e alterar produção**. As decisões abaixo existem por causa disso.
 
-| Guard rail | What it does |
-|---|---|
-| `FLUIG_READONLY=1` | Removes all 18 state-changing tools from the MCP surface entirely. They cannot be called, not even by name. |
-| `confirm: true` | Every destructive client method refuses to run without it, before any network call. |
-| `SELECT`/`WITH` only | The query tools reject anything else before the statement leaves the process. |
-| New versions, not in-place edits | Process writes go through export → patch → import, so `fluig_process_version_withdraw` rolls a bad deploy back. |
-| No credentials in code | Host, user and password come from the environment. A missing one is a hard error — there is nothing to fall back to. |
+### Credenciais
 
-## Recommendations
+- **Nenhum default.** Não há host nem senha embutidos no código. Variável faltando é erro
+  explícito, nunca fallback silencioso para o servidor de outra pessoa.
+- **Credenciais só por ambiente**, nunca commitadas. `.env` e `.env.*` estão no `.gitignore`
+  (exceto `.env.example`).
+- **A senha de produção não cai na de homologação.** Esse fallback existia e era uma armadilha:
+  mandava a credencial de homologação contra produção.
+- **O login não repete.** Ao ser recusado, aborta na primeira tentativa; e falha **sem tocar a
+  rede** quando não há senha configurada. Em domínio com `lockoutThreshold=3`, repetir login é o
+  jeito mais fácil de bloquear a conta de alguém.
 
-1. **Start read-only.** Set `FLUIG_READONLY=1` and leave it until you have watched what the agent
-   does with the read tools.
-2. **Use a dedicated Fluig account** with the narrowest set of roles the job needs, rather than a
-   personal administrator login. It also makes the audit trail meaningful.
-3. **Point at staging first.** Verify a process deploy with a round trip — export a definition and
-   re-import it unchanged — before letting anything touch production.
-4. **Keep credentials out of the repository.** `.env` is git-ignored. Prefer your MCP client's
-   `env` block or your OS secret store over a file on disk.
-5. **Mind the CLI output directory.** `./out` contains your organisation's dataset, form and
-   process source. It is git-ignored here; keep it that way wherever it lands.
+Se você registra o servidor no config do cliente MCP, a senha fica em texto plano nesse arquivo.
+Prefira variáveis de ambiente do sistema ou um gerenciador de segredos quando o ambiente permitir.
 
-## Throwaway datasets
+### Escrita
 
-Running SQL requires a server-side dataset, so the query tools write one named
-`${FLUIG_SCRATCH_PREFIX}<purpose>` — by default `ds_mcp_dbquery`, `ds_mcp_rmdbquery`,
-`ds_mcp_rmquery`, `ds_mcp_rmexec`, `ds_mcp_dbexec`. This happens in read-only mode too, because it
-is the mechanism by which reading works.
+- Toda ferramenta que altera o servidor exige `confirm: true`.
+- As destrutivas (`fluig_process_convert_instances`, `fluig_rm_save_record`) devolvem **dry-run**
+  com o plano antes de executar.
+- `FLUIG_READONLY=1` remove as 37 ferramentas de escrita da listagem e passa a recusá-las. Use
+  isso para agente sem supervisão.
+- `env` é obrigatório em toda chamada. Não existe ambiente default — é o que impede escrever em
+  produção achando que é homologação.
 
-Those datasets only hold the statement that was last run through them. Anything with that prefix
-on your server was created by this tool and can be removed with `fluig_dataset_delete`. If a
-server where nothing at all may be written is a requirement, do not enable the SQL tools.
+### Ferramentas de leitura que escrevem
 
-## Reporting a vulnerability
+Executar SQL arbitrário no Fluig exige que o SQL viva dentro de um dataset. Por isso
+`fluig_db_query`, `fluig_rm_db_query`, `fluig_service_list`, `fluig_process_error_log` e
+`fluig_rm_dataserver_schema` gravam um dataset descartável — e o SQL fica em
+`FDN_DATASETHISTORY`, que é **imutável pela API**.
 
-Please report security issues privately through
-[GitHub Security Advisories](https://github.com/alucardigo/fluig-mcp/security/advisories/new)
-rather than as a public issue, and allow a reasonable window for a fix before disclosure.
+Elas são tratadas como escrita: aparecem com `!`, somem no modo somente leitura e exigem
+`confirm` em produção.
 
-If the issue is in TOTVS Fluig itself rather than in this client, report it to TOTVS — this
-project is independent and cannot patch the platform.
+Um dataset passthrough permanente eliminaria a escrita, mas publicaria um dataset capaz de
+executar SQL de **qualquer** chamador com permissão de rodar dataset. Isso troca rastro de
+escrita por elevação de privilégio, então não foi feito.
+
+### O que este projeto não protege
+
+- **O histórico de datasets é imutável pela API.** Se uma credencial já esteve escrita dentro de
+  um dataset no seu servidor, ela continua legível via `dataset-history` mesmo depois de trocada.
+  Trocar a senha não apaga o histórico. Isso é comportamento do Fluig, não deste projeto — mas
+  vale auditar, porque é comum encontrar usuário e senha de integração em texto plano ali.
+- **`fluig_rest_get` / `fluig_rest_post` são escape hatches.** Eles alcançam qualquer rota da API
+  com a sessão autenticada. Se você não quer isso, rode em modo somente leitura (o `_post` some)
+  ou não exponha este servidor a um agente sem supervisão.
+- **O agente vê o que você deixa ele ver.** Este servidor não filtra dado de negócio. Conteúdo
+  lido do Fluig — fichas, anexos, dossiês — chega inteiro ao cliente MCP.
+
+## Escopo
+
+Vale como vulnerabilidade: vazamento de credencial, escrita que escapa do `confirm`/`readOnly`,
+injeção que permita executar algo não pretendido, ou qualquer coisa que faça o servidor agir num
+ambiente diferente do que o `env` pediu.
+
+Não vale: comportamento do TOTVS Fluig em si (reporte à TOTVS), e configurações inseguras
+escolhidas por quem instala — como apontar para produção sem `FLUIG_READONLY` e entregar a um
+agente autônomo.

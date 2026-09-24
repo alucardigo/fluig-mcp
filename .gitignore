@@ -1,13 +1,26 @@
 node_modules/
 
-# Credentials — never commit these.
+# Credenciais — nunca commitar.
 .env
 .env.*
 !.env.example
 
-# Output of the CLI (dumped datasets, forms, process definitions). This is your
-# employer's source code: keep it out of the repository.
+# Saída de dumps (datasets, formulários, definições de processo baixadas do servidor).
+# Isso é código-fonte do seu empregador/cliente: mantenha fora do repositório.
 out/
+dumps/
+*.forms.json
+*_prod.json
+
+# Artefatos baixados do GED e anexos de solicitação: são dados de negócio.
+downloads/
+*.svg
+!docs/**/*.svg
+
+# Análise local (decompilação do produto, specs extraídas do WAR).
+# É material proprietário da TOTVS — não redistribuir.
+_analysis/
+_kb/
 
 *.log
 npm-debug.log*

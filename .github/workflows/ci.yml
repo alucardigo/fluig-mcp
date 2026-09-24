@@ -27,30 +27,41 @@ jobs:
 
       - run: npm ci
 
-      - name: Syntax check
+      - name: Checagem de sintaxe
         run: npm run check
 
-      - name: Unit tests
+      - name: Testes unitários
         run: npm test
 
-      # The tool surface must be inspectable without credentials — that property is what
-      # lets someone audit this server before handing it a password, so it is a test.
-      - name: Tool surface lists without any configuration
+      # A superfície de ferramentas precisa ser inspecionável SEM credencial — é isso que
+      # permite auditar o servidor antes de entregar uma senha a ele. Logo, é um teste.
+      - name: Lista as ferramentas sem nenhuma configuração
         run: |
           node server.js --list
-          test "$(node server.js --list | grep -cE '^\s+[! ] fluig_')" -eq 56
+          test "$(node server.js --list | grep -cE 'fluig_[a-z_0-9]+:')" -eq 97
 
-      - name: Read-only mode hides every write tool
+      - name: Modo somente leitura não expõe nenhuma escrita
         env:
           FLUIG_READONLY: '1'
         run: |
           node server.js --list
-          test "$(node server.js --list | grep -c '^  ! ')" -eq 0
+          test "$(node server.js --list | grep -cE '^\s+!\s')" -eq 0
 
-      # A missing variable must fail loudly instead of falling back to some default server.
-      - name: Missing configuration fails cleanly
+      # Variável faltando tem que falhar alto, nunca cair num servidor default.
+      - name: Sem configuração, falha limpo
         run: |
           if node server.js; then
-            echo 'expected a non-zero exit without FLUIG_HOST/USER/PASS' >&2
+            echo 'esperava saída != 0 sem FLUIG_HOST/USER/PASS' >&2
             exit 1
           fi
+
+  scan-segredos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
