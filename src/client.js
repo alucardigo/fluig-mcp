@@ -224,14 +224,25 @@ export class FluigClient {
     }
   }
 
+  /**
+   * Cliente SOAP para um WSDL do Fluig.
+   *
+   * Assim como o _fetch, monta a URL pelo HOSTNAME e não pelo IP sondado. A sonda continua
+   * valendo para saber se existe caminho vivo, mas quem entra na URL é o hostname — senão o
+   * SOAP repete os dois problemas que o REST tinha: certificado não bate em HTTPS (o cert é
+   * emitido para o nome, não para o IP) e o IPS bloqueia acesso por IP.
+   *
+   * Isto é a mesma correção que Antonio (antoniosdn) fez no _fetch — o PR dele revelou a causa
+   * raiz, que estava em DOIS lugares. O SOAP tinha ficado de fora.
+   */
   async _soapClient(wsdlPath) {
     if (this._soap[wsdlPath]) return this._soap[wsdlPath];
     const cookie = await this.login();
-    const { base } = await this._liveBase();
-    const wsdlUrl = `${base}${wsdlPath}`;
+    await this._liveBase();                    // só confirma que há caminho vivo
+    const wsdlUrl = `${this.host}${wsdlPath}`;
     const client = await retry(() => soap.createClientAsync(wsdlUrl, {
       disableCache: true, handleNilAsNull: true,
-      endpoint: wsdlUrl.replace('?wsdl', ''),   // fala direto no IP verificado
+      endpoint: wsdlUrl.replace('?wsdl', ''),   // mesmo hostname nas chamadas subsequentes
       wsdl_headers: { Host: this._hostHeader },  // vhost no fetch do WSDL
     }));
     client.addHttpHeader('Host', this._hostHeader);  // vhost nas chamadas SOAP
