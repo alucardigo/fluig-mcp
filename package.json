@@ -55,6 +55,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "soap": "^1.9.3"
+    "soap": "^1.9.3",
+    "undici": "^8.11.2"
   }
 }
