@@ -1,75 +1,85 @@
-import test from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadConfig } from '../src/config.js';
+import { loadConfig, ambientesConfigurados } from '../src/config.js';
 
-const MINIMAL = {
-  FLUIG_HOST: 'https://fluig.example.com:8080',
-  FLUIG_USER: 'alice',
-  FLUIG_PASS: 'secret',
+const HOMOLOG = {
+  FLUIG_HOST: 'http://fluig.exemplo.com.br:8080',
+  FLUIG_USER: 'fulano',
+  FLUIG_PASS: 'senha-homolog',
+};
+const PROD = {
+  FLUIG_HOST_PROD: 'https://fluig.exemplo.com.br:8443',
+  FLUIG_USER_PROD: 'fulano',
+  FLUIG_PASS_PROD: 'senha-prod',
 };
 
-test('requires host, user and password', () => {
-  assert.throws(() => loadConfig({}), /FLUIG_HOST, FLUIG_USER, FLUIG_PASS/);
-  assert.throws(() => loadConfig({ FLUIG_HOST: MINIMAL.FLUIG_HOST }), /FLUIG_USER, FLUIG_PASS/);
+test('falha explicitamente quando falta variável, em vez de usar default', () => {
+  assert.throws(() => loadConfig('teste', {}), /não configurado/i);
+  assert.throws(() => loadConfig('teste', { FLUIG_HOST: 'http://x:8080' }), /FLUIG_USER/);
 });
 
-test('treats blank values as missing', () => {
-  assert.throws(() => loadConfig({ ...MINIMAL, FLUIG_USER: '   ' }), /FLUIG_USER/);
-});
-
-test('rejects a host that is not an http(s) URL', () => {
-  assert.throws(() => loadConfig({ ...MINIMAL, FLUIG_HOST: 'fluig.example.com' }), /not a valid URL/);
-  assert.throws(() => loadConfig({ ...MINIMAL, FLUIG_HOST: 'ftp://fluig.example.com' }), /must use http or https/);
-});
-
-test('trims a trailing slash off the host', () => {
-  assert.equal(loadConfig({ ...MINIMAL, FLUIG_HOST: 'https://f.example.com:8080//' }).host, 'https://f.example.com:8080');
-});
-
-test('ships no default host, user or password', () => {
-  // Regression guard: a tool that defaults to somebody's server, or to a password,
-  // leaks the moment it is published. There must be nothing to fall back to.
-  const src = loadConfig.toString();
-  assert.ok(!/https?:\/\/(?!$)/.test(src), 'loadConfig must not contain a hard-coded URL');
-});
-
-test('applies documented defaults', () => {
-  const c = loadConfig(MINIMAL);
-  assert.equal(c.companyId, 1);
-  assert.equal(c.userCode, 'alice');
-  assert.deepEqual(c.seedIps, []);
-  assert.equal(c.datasource, '/jdbc/AppDS');
-  assert.equal(c.rmDatasource, '/jdbc/Corpore');
-  assert.equal(c.rmBridgeDataset, 'ds_generic_rm_sql');
-  assert.equal(c.scratchPrefix, 'ds_mcp_');
-  assert.equal(c.readOnly, false);
-});
-
-test('honours overrides', () => {
-  const c = loadConfig({
-    ...MINIMAL,
-    FLUIG_COMPANY: '-1',
-    FLUIG_USERCODE: 'alice.smith',
-    FLUIG_IPS: '10.0.0.1, 10.0.0.2 ,',
-    FLUIG_DATASOURCE: '/jdbc/Other',
-    FLUIG_RM_DATASOURCE: '/jdbc/RM',
-    FLUIG_RM_BRIDGE_DATASET: 'ds_rm_bridge',
-    FLUIG_SCRATCH_PREFIX: 'ds_tmp_',
-  });
-  assert.equal(c.companyId, -1);
-  assert.equal(c.userCode, 'alice.smith');
-  assert.deepEqual(c.seedIps, ['10.0.0.1', '10.0.0.2']);
-  assert.equal(c.datasource, '/jdbc/Other');
-  assert.equal(c.rmDatasource, '/jdbc/RM');
-  assert.equal(c.rmBridgeDataset, 'ds_rm_bridge');
-  assert.equal(c.scratchPrefix, 'ds_tmp_');
-});
-
-test('parses the read-only flag from the usual truthy spellings', () => {
-  for (const v of ['1', 'true', 'TRUE', 'yes', 'on']) {
-    assert.equal(loadConfig({ ...MINIMAL, FLUIG_READONLY: v }).readOnly, true, `expected ${v} to be truthy`);
+test('a mensagem de erro diz exatamente o que falta', () => {
+  try {
+    loadConfig('prod', { FLUIG_HOST_PROD: 'https://x:8443' });
+    assert.fail('deveria ter lançado');
+  } catch (e) {
+    assert.match(e.message, /FLUIG_USER_PROD/);
+    assert.match(e.message, /FLUIG_PASS_PROD/);
   }
-  for (const v of ['0', 'false', 'no', '', undefined]) {
-    assert.equal(loadConfig({ ...MINIMAL, FLUIG_READONLY: v }).readOnly, false, `expected ${v} to be falsy`);
+});
+
+test('NÃO existe host nem senha embutidos no código', async () => {
+  const fonte = await import('node:fs').then(fs =>
+    fs.readFileSync(new URL('../src/config.js', import.meta.url), 'utf8'));
+  // Um default de host ou senha seria um vazamento: o teste existe para que ninguém
+  // reintroduza um por conveniência.
+  assert.doesNotMatch(fonte, /FLUIG_HOST\s*\|\|\s*['"]http/i, 'host default reintroduzido');
+  assert.doesNotMatch(fonte, /FLUIG_PASS\s*\|\|\s*['"][^'"]+['"]/, 'senha default reintroduzida');
+});
+
+test('a senha de PRODUÇÃO não cai na de homologação', () => {
+  // Esse fallback existia e queimava tentativas do AD contra produção.
+  assert.throws(() => loadConfig('prod', { ...HOMOLOG, FLUIG_HOST_PROD: 'https://p:8443', FLUIG_USER_PROD: 'fulano' }),
+    /FLUIG_PASS_PROD/);
+});
+
+test('lê os dois ambientes de forma independente', () => {
+  const t = loadConfig('teste', { ...HOMOLOG, ...PROD });
+  const p = loadConfig('prod', { ...HOMOLOG, ...PROD });
+  assert.equal(t.env, 'teste');
+  assert.equal(t.isProd, false);
+  assert.equal(t.host, 'http://fluig.exemplo.com.br:8080');
+  assert.equal(p.env, 'prod');
+  assert.equal(p.isProd, true);
+  assert.equal(p.pass, 'senha-prod');
+  assert.notEqual(t.pass, p.pass);
+});
+
+test('recusa host que não é URL http(s)', () => {
+  assert.throws(() => loadConfig('teste', { ...HOMOLOG, FLUIG_HOST: 'nao-e-url' }), /não é uma URL válida/i);
+  assert.throws(() => loadConfig('teste', { ...HOMOLOG, FLUIG_HOST: 'ftp://x' }), /http ou https/i);
+});
+
+test('remove barra final do host', () => {
+  const c = loadConfig('teste', { ...HOMOLOG, FLUIG_HOST: 'http://fluig.exemplo.com.br:8080//' });
+  assert.equal(c.host, 'http://fluig.exemplo.com.br:8080');
+});
+
+test('recusa ambiente inválido', () => {
+  assert.throws(() => loadConfig('producao', HOMOLOG), /Ambiente inválido/i);
+});
+
+test('ambientesConfigurados enxerga só o que tem host', () => {
+  assert.deepEqual(ambientesConfigurados({}), []);
+  assert.deepEqual(ambientesConfigurados(HOMOLOG), ['teste']);
+  assert.deepEqual(ambientesConfigurados({ ...HOMOLOG, ...PROD }), ['teste', 'prod']);
+});
+
+test('FLUIG_READONLY aceita as formas usuais de "sim"', () => {
+  for (const v of ['1', 'true', 'yes', 'on', 'TRUE']) {
+    assert.equal(loadConfig('teste', { ...HOMOLOG, FLUIG_READONLY: v }).readOnly, true, v);
+  }
+  for (const v of ['0', 'false', '', 'nao']) {
+    assert.equal(loadConfig('teste', { ...HOMOLOG, FLUIG_READONLY: v }).readOnly, false, v);
   }
 });

@@ -1,65 +1,65 @@
-# Contributing
+# Contribuindo
 
-Bug reports, protocol findings and pull requests are all welcome. Fluig installations differ
-enough that a report of "this endpoint behaves differently on my server" is genuinely useful on
-its own.
+Obrigado pelo interesse. Este projeto fala com servidores TOTVS Fluig reais, então algumas
+regras existem para que uma contribuição bem-intencionada não vire perda de dado na produção de
+alguém.
 
-## Getting set up
+## Antes de abrir PR
 
 ```bash
-git clone https://github.com/alucardigo/fluig-mcp.git
-cd fluig-mcp
-npm install
-npm test          # offline; no Fluig server needed
-npm run check     # syntax check
-npm run list      # print the tool surface
+npm run check   # sintaxe
+npm test        # testes unitários
+npm run list    # a superfície de ferramentas ainda sobe sem credencial?
 ```
 
-The test suite stubs the network layer, so everything runs anywhere. Never add a test that needs a
-live server — instance ids, process names and datasets differ per installation, and a suite that
-only passes on one machine is worse than no suite.
+O CI roda isso no Node 20, 22 e 24, e também verifica duas propriedades que valem como teste:
+`--list` funciona **sem nenhuma configuração**, e `FLUIG_READONLY=1` não deixa passar nenhuma
+ferramenta de escrita.
 
-## Pull requests
+## Regras que não são negociáveis
 
-- **One logical change per commit**, each leaving the tree green. That is what makes `git bisect`
-  worth anything later.
-- **Explain the why in the commit body.** The diff already shows the what.
-- **Cover behaviour with a test.** A bug fix without a regression test invites the bug back. The
-  jQuery-`$` case in `test/client.test.js` is the model: a real failure, pinned down forever.
-- **Say if a change is observable.** Renaming an argument or changing a returned shape breaks
-  callers; if it is worth doing anyway, say so and note the migration.
-- **Disclose AI assistance** if you used it, and be able to explain every non-obvious decision in
-  the diff without re-reading your prompt. You own the code you submit either way.
+**Nenhum default de host ou credencial.** Nunca acrescente um valor padrão para `FLUIG_HOST`,
+`FLUIG_PASS` ou equivalentes. Uma ferramenta que já vem com endpoint embutido é vazamento
+esperando acontecer, e senha default nunca é a resposta certa. Variável faltando deve ser erro
+explícito.
 
-## House rules
+**`--list` não pode exigir credencial.** É o que permite auditar o que este servidor faz antes
+de confiar uma senha a ele. Não mova a carga de configuração para o topo do `server.js`.
 
-- No new runtime dependencies without a concrete reason. Two is the current count and it is a
-  feature.
-- Keep files small and single-purpose: configuration in `src/config.js`, protocol in
-  `src/client.js`, tool surface in `src/tools.js`, wiring in `server.js`.
-- Comments explain **why**, never what. The ones documenting a server quirk, an inverted API name
-  or a bug that cost a day are the most valuable lines in the file — do not tidy them away.
-- Tool descriptions are read by language models. Say what the tool does, what it costs and what it
-  breaks, in plain sentences.
-- The README is in Portuguese, because Fluig is a Brazilian platform and so is everyone who runs
-  it. The code is in English — comments, tool descriptions, error messages and identifiers — so
-  that the source stays consistent with its own dependencies and with the wider Node ecosystem.
-  Keep both sides of that line where they are.
+**Ferramenta nova que escreve entra em `TOOLS_ESCRITA`.** A lista em `server.js` é curada à mão
+de propósito — heurística por nome errava nos dois sentidos. Se a sua ferramenta altera qualquer
+coisa no servidor, inclusive gravar um dataset descartável para executar SQL, ela é escrita.
+Um modo somente leitura que vaza uma ferramenta de escrita é pior do que não existir.
 
-## Adding a tool
+**Escrita exige `confirm`. Destrutiva exige dry-run.** Se a operação pode perder trabalho de
+alguém (converter instâncias, apagar versão, gravar no ERP), ela precisa mostrar o plano antes.
 
-1. Add the client method to `src/client.js`. Anything destructive takes `opts.confirm` and throws
-   before it touches the network.
-2. Add the registry entry in `src/tools.js` with `write: true` if it changes server state, and a
-   `confirm` property in the schema if it is destructive.
-3. The tests in `test/tools.test.js` enforce the registry invariants automatically — run them.
-4. Add the row to the tool tables in `README.md`.
+**Não teste em processo com solicitações abertas.** Para ponta a ponta, crie processo descartável
+com prefixo `ZZ_TESTE_` e limpe depois.
 
-## Reporting a protocol finding
+## Estilo
 
-The most valuable contributions are endpoint discoveries. When you send one, include the Fluig
-version, the request (method, path, headers that mattered, body shape), the response, and how you
-confirmed it. "It worked once" and "this is the documented contract" are very different claims —
-please distinguish them.
+- ES modules, Node 20+, sem transpilação e sem dependência nova sem motivo forte.
+- **Comentário explica o porquê, não o quê.** O valor deste repositório está nas armadilhas
+  documentadas: se você descobriu que uma rota devolve 500 onde deveria devolver 400, ou que um
+  parâmetro tem nome diferente do que a documentação diz, **escreva isso no código**, junto da
+  linha que lida com o problema. Foi assim que a tabela de armadilhas do README nasceu.
+- Código de dataset roda em **Rhino (ES5)**: nada de `let`, `const`, arrow function ou template
+  string dentro de string de dataset.
 
-Security issues go through [SECURITY.md](SECURITY.md), not the public issue tracker.
+## Verifique contra um servidor real
+
+Este projeto trata documentação e spec como hipótese, não como fato — porque elas erraram várias
+vezes. Se você está corrigindo o comportamento de uma rota, diga no PR **o que você mediu**:
+qual servidor, qual versão do Fluig, qual resposta. "A spec diz" não fecha a questão; "chamei e
+voltou isto" fecha.
+
+Se não tiver um ambiente para testar, abra a PR mesmo assim e diga que não foi verificada — é
+melhor do que uma afirmação sem respaldo.
+
+## Reportando bugs
+
+Inclua: versão do Fluig, o que você chamou (ferramenta e argumentos, **sem credencial**), o que
+esperava e o que veio. Se for erro do servidor, cole o `code`/`message` que a API devolveu.
+
+Falha de segurança **não** vai em issue pública — veja [SECURITY.md](SECURITY.md).

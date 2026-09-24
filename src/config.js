@@ -1,68 +1,87 @@
 /**
- * Configuration, read entirely from the environment.
+ * Configuração — lida inteiramente do ambiente.
  *
- * There are deliberately no defaults for the host or the credentials. A tool that
- * ships with a working endpoint baked in is a leak waiting to happen, and a default
- * password is never the right answer — so a missing variable is a hard, explicit error
- * instead of a silent fallback to somebody else's server.
+ * NÃO existe default de host nem de credencial, de propósito. Uma ferramenta que já vem com
+ * um endpoint embutido é vazamento esperando acontecer, e senha default nunca é a resposta
+ * certa: variável faltando é erro explícito, nunca fallback silencioso para o servidor de
+ * outra pessoa.
+ *
+ * DOIS AMBIENTES. Este servidor atende homologação e produção ao mesmo tempo, e toda chamada
+ * escolhe o alvo pelo parâmetro `env` ("teste" | "prod"). O motivo é operacional: com um
+ * default silencioso, quem pedia produção lia homologação e reportava o número errado como
+ * se fosse de produção. Configure só o par de teste, só o de prod, ou os dois.
+ *
+ *   Homologação:  FLUIG_HOST       FLUIG_USER        FLUIG_PASS
+ *   Produção:     FLUIG_HOST_PROD  FLUIG_USER_PROD   FLUIG_PASS_PROD
+ *
+ * ⚠️ A credencial de produção NÃO cai na de homologação. Esse fallback existia e era uma
+ *    armadilha: mandava a senha de homologação contra produção e queimava tentativas do
+ *    Active Directory — o suficiente para bloquear a conta do usuário.
  */
-
-/** Variables without which the client cannot do anything useful. */
-const REQUIRED = ['FLUIG_HOST', 'FLUIG_USER', 'FLUIG_PASS'];
 
 const TRUTHY = /^(1|true|yes|on)$/i;
 
-/**
- * @typedef {object} FluigConfig
- * @property {string}   host             Base URL of the Fluig portal, e.g. `https://fluig.example.com:8080`.
- * @property {string}   user             Login used for REST, SOAP and the session cookie.
- * @property {string}   pass             Password for that login.
- * @property {number}   companyId        Tenant id (Fluig `companyId`). `-1` asks the server to resolve it.
- * @property {string}   userCode         Colleague id; defaults to `user`.
- * @property {string[]} seedIps          Fallback IPs probed when DNS is unreliable.
- * @property {string}   datasource       JNDI name of the Fluig database datasource.
- * @property {string}   rmDatasource     JNDI name of the TOTVS RM database datasource.
- * @property {string}   rmBridgeDataset  Dataset that proxies RM stored SQL statements.
- * @property {string}   scratchPrefix    Prefix for the throwaway datasets this server creates.
- * @property {boolean}  readOnly         When true, only non-mutating tools are exposed.
- */
+/** Valida e normaliza a URL base do portal. */
+function parseHost(valor, variavel) {
+  const host = String(valor).trim().replace(/\/+$/, '');
+  let url;
+  try {
+    url = new URL(host);
+  } catch {
+    throw new Error(`${variavel} não é uma URL válida: ${host}`);
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error(`${variavel} precisa usar http ou https — recebi: ${url.protocol}`);
+  }
+  return host;
+}
+
+/** Quais ambientes têm host configurado. Usado para validar antes de subir o servidor. */
+export function ambientesConfigurados(env = process.env) {
+  const out = [];
+  if (env.FLUIG_HOST) out.push('teste');
+  if (env.FLUIG_HOST_PROD) out.push('prod');
+  return out;
+}
 
 /**
- * Reads and validates configuration.
+ * Lê a configuração de um ambiente.
  *
- * @param {NodeJS.ProcessEnv} [env] Environment to read from; injectable for tests.
- * @returns {FluigConfig}
- * @throws {Error} When a required variable is missing or `FLUIG_HOST` is not a valid http(s) URL.
+ * @param {'teste'|'prod'} alvo
+ * @param {NodeJS.ProcessEnv} [env] injetável para teste
+ * @throws {Error} quando falta host ou credencial daquele ambiente
  */
-export function loadConfig(env = process.env) {
-  const missing = REQUIRED.filter((key) => !env[key] || !String(env[key]).trim());
-  if (missing.length) {
+export function loadConfig(alvo = 'teste', env = process.env) {
+  if (alvo !== 'teste' && alvo !== 'prod') {
+    throw new Error(`Ambiente inválido: "${alvo}". Use "teste" ou "prod".`);
+  }
+  const isProd = alvo === 'prod';
+  const vHost = isProd ? 'FLUIG_HOST_PROD' : 'FLUIG_HOST';
+  const vUser = isProd ? 'FLUIG_USER_PROD' : 'FLUIG_USER';
+  const vPass = isProd ? 'FLUIG_PASS_PROD' : 'FLUIG_PASS';
+
+  const faltando = [vHost, vUser, vPass].filter((k) => !env[k] || !String(env[k]).trim());
+  if (faltando.length) {
     throw new Error(
-      `Missing required environment variable(s): ${missing.join(', ')}. ` +
-      'Set them in your MCP client config or your shell — see .env.example.',
+      `Ambiente "${alvo}" não configurado — faltam: ${faltando.join(', ')}. `
+      + 'Defina no config do seu cliente MCP ou no shell (veja .env.example). '
+      + 'Não há default: um host ou senha embutidos seriam um vazamento.',
     );
   }
 
-  const host = String(env.FLUIG_HOST).trim().replace(/\/+$/, '');
-  let parsed;
-  try {
-    parsed = new URL(host);
-  } catch {
-    throw new Error(`FLUIG_HOST is not a valid URL: ${host}`);
-  }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error(`FLUIG_HOST must use http or https, got: ${parsed.protocol}`);
-  }
-
-  const user = String(env.FLUIG_USER).trim();
-
+  const user = String(env[vUser]).trim();
   return {
-    host,
+    env: alvo,
+    isProd,
+    host: parseHost(env[vHost], vHost),
     user,
-    pass: String(env.FLUIG_PASS),
-    companyId: Number(env.FLUIG_COMPANY ?? 1),
-    userCode: String(env.FLUIG_USERCODE || user).trim(),
-    seedIps: String(env.FLUIG_IPS || '').split(',').map((s) => s.trim()).filter(Boolean),
+    pass: String(env[vPass]),
+    companyId: Number(env[isProd ? 'FLUIG_COMPANY_PROD' : 'FLUIG_COMPANY'] ?? env.FLUIG_COMPANY ?? 1),
+    userCode: String(env[isProd ? 'FLUIG_USERCODE_PROD' : 'FLUIG_USERCODE'] || user).trim(),
+    // IPs semente para quando o DNS interno oscila. São sempre TCP-probados antes de usar,
+    // então um seed obsoleto é inofensivo. A requisição em si vai pelo HOSTNAME (ver _fetch).
+    seedIps: String(env[isProd ? 'FLUIG_IPS_PROD' : 'FLUIG_IPS'] || '')
+      .split(',').map((s) => s.trim()).filter(Boolean),
     datasource: String(env.FLUIG_DATASOURCE || '/jdbc/AppDS').trim(),
     rmDatasource: String(env.FLUIG_RM_DATASOURCE || '/jdbc/Corpore').trim(),
     rmBridgeDataset: String(env.FLUIG_RM_BRIDGE_DATASET || 'ds_generic_rm_sql').trim(),

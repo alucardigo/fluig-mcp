@@ -1,33 +1,59 @@
 # Changelog
 
-All notable changes to this project are documented here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
-[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/);
+versionamento [SemVer](https://semver.org/lang/pt-BR/).
 
-## [0.1.0] - 2026-07-29
+## [1.0.0] — 2026-09-24
 
-First public release.
+Primeira versão pública. 97 ferramentas, dois ambientes, e as armadilhas do produto embutidas
+no código.
 
-### Added
+### Adicionado
 
-- MCP stdio server exposing 56 tools over the TOTVS Fluig API.
-- Datasets: list, read source, inspect structure without running, run, upsert, delete.
-- Forms: list, read every file and event, read a whole form, publish a new version.
-- Global events: read and write.
-- BPM process definitions: export the `.ecm30.xml`; read and patch process event source through
-  export → patch → import, producing a new revertible version on a stock server with no add-on;
-  deploy over REST v2 or SOAP; list, withdraw and delete versions; replace the SVG diagram.
-- Process instances: start, take, move, cancel; read the card, a single field, the history, the
-  attachments, active and reachable states, and eligible assignees; list user replacements.
-- SQL passthrough: read-only `SELECT` against the Fluig database and against TOTVS RM, plus RM
-  queries through the stored-statement bridge dataset, and a guarded write path.
-- Authenticated `GET`/`POST` escape hatches.
-- `FLUIG_READONLY=1` to expose only the 38 tools that cannot change server state.
-- Self-healing address resolution: candidate addresses are TCP-probed in parallel and the first
-  reachable one is pinned, with the original `Host` header preserved for virtual hosts; retry with
-  backoff on transient errors only; detection of inline web-filter block pages, which otherwise
-  masquerade as "not found".
-- `fluig-cli`, a terminal front end over the same client, for verifying connectivity and dumping
-  datasets, forms and process definitions to disk.
-- Offline test suite on the built-in `node:test` runner, including a regression test pinning the
-  jQuery-`$` corruption in process event patching.
+- **33 ferramentas novas** cobrindo o que faltava para fechar ciclos que o servidor já abria:
+  - *Runtime BPM*: `fluig_task_list`, `fluig_task_count`, `fluig_request_list`,
+    `fluig_request_get`, `fluig_process_possible_assignees`, `fluig_process_activities_resume`.
+  - *Formulários*: `fluig_card_list`, `fluig_card_children_get` (linhas pai-filho **com
+    `rowId`**), `fluig_form_fields`, `fluig_card_save`, `fluig_form_create`,
+    `fluig_card_html_url`.
+  - *Dataset reversível*: `fluig_dataset_history`, `fluig_dataset_draft_check`,
+    `fluig_dataset_restore`, `fluig_dataset_state_set`.
+  - *Processo*: `fluig_process_version_release` (publica a versão que `import_xml` deixa em
+    edição), `fluig_process_def_states`, `fluig_process_diagram_get`, `fluig_process_move_rest`,
+    `fluig_process_create`, `fluig_process_convert_instances`, `fluig_process_error_log`,
+    `fluig_workflow_exporter`, `fluig_deadline_calc`.
+  - *GED*: `fluig_ged_list`, `fluig_ged_path`, `fluig_ged_download`, `fluig_ged_upload`,
+    `fluig_process_attachment_download`.
+  - *RM e integração*: `fluig_service_list`, `fluig_rm_dataserver_schema`,
+    `fluig_rm_save_record` (escrita no ERP pela business layer, em vez de SQL cru).
+  - *Diagnóstico*: `fluig_version`, `fluig_session_reset`.
+- **Dois ambientes no mesmo servidor**, com `env` obrigatório em toda chamada.
+- **`FLUIG_READONLY=1`**: expõe somente as 60 ferramentas que não alteram o servidor.
+- **`--list`, `--help`, `--version`** funcionando sem credencial.
+
+### Corrigido
+
+- `fluig_rm_query` **parou de gravar no servidor**. Era anunciada como read-only e gravava um
+  dataset a cada chamada; agora chama `ds_generic_rm_sql` direto pelo `dataset-handle/search`.
+- `date-calculator` usa `seconds`, não `duration` — com o nome errado o servidor devolvia
+  `NullPointerException`, que parecia bug do produto.
+- `fluig_card_html_url` não aceita `cardId`; os parâmetros corretos são
+  `documentId`+`documentVersionId` ou `processId`+`processInstanceId`.
+- `fluig_ged_list` normaliza o grid antigo (`invdata`), que fazia pasta cheia parecer vazia.
+- Requisições saem pelo **hostname**, não pelo IP sondado — corrige o mismatch de TLS/SNI em
+  HTTPS e o bloqueio de IPS por acesso via IP.
+  (Correção trazida do fork de [Antonio](https://github.com/antoniosdn/fluig-mcp), commit `95a32af`.)
+- `fluig_task_count` exige `processId`: sem filtro a rota varre a base e passa de 120 s.
+
+### Segurança
+
+- **Sem defaults de host e credencial.** Variável faltando é erro explícito.
+- **A senha de produção não cai mais na de homologação** — o fallback queimava tentativas do
+  Active Directory e chegou a bloquear a conta do usuário.
+- **O login não repete** ao ser recusado, e falha sem tocar a rede quando não há senha.
+- Ferramentas cuja consulta é read-only mas que **gravam um dataset para executar SQL**
+  (`fluig_db_query`, `fluig_rm_db_query`, `fluig_service_list`, `fluig_process_error_log`,
+  `fluig_rm_dataserver_schema`) passaram a ser tratadas como escrita e exigem `confirm` em
+  produção. As descrições pararam de chamá-las de read-only.
+- `.gitignore` bloqueia `out/`, dumps e material de análise — são dados do cliente e código
+  proprietário de terceiro.
