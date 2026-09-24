@@ -41,8 +41,13 @@ no código.
   `documentId`+`documentVersionId` ou `processId`+`processInstanceId`.
 - `fluig_ged_list` normaliza o grid antigo (`invdata`), que fazia pasta cheia parecer vazia.
 - Requisições saem pelo **hostname**, não pelo IP sondado — corrige o mismatch de TLS/SNI em
-  HTTPS e o bloqueio de IPS por acesso via IP.
-  (Correção trazida do fork de [Antonio](https://github.com/antoniosdn/fluig-mcp), commit `95a32af`.)
+  HTTPS e o bloqueio de IPS por acesso via IP. O `fetch` do Node deriva o SNI e a verificação do
+  certificado da URL, não do header `Host`, então o IP na URL quebrava toda chamada HTTPS.
+  Correção de [Antonio (@antoniosdn)](https://github.com/antoniosdn),
+  [PR #1](https://github.com/alucardigo/fluig-mcp/pull/1).
+- O mesmo defeito existia no **cliente SOAP**, que montava a URL do WSDL pelo IP — afetando
+  `listDatasets`, `runDataset`, `startProcess`, `move` e todas as demais ferramentas SOAP.
+  Corrigido junto, no merge do PR #1. Validado em produção HTTPS (627 datasets pelo hostname).
 - `fluig_task_count` exige `processId`: sem filtro a rota varre a base e passa de 120 s.
 
 ### Segurança

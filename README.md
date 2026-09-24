@@ -224,11 +224,19 @@ Contribuições são bem-vindas — veja [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Créditos
 
-A correção que faz as requisições saírem pelo **hostname** em vez do IP fixado (resolvendo o
-mismatch de TLS/SNI e o bloqueio de IPS) veio do fork de
-[Antonio](https://github.com/antoniosdn/fluig-mcp) — assim como a estrutura de empacotamento
-que este repositório adota: configuração sem defaults, modo somente leitura e `--list` auditável
-sem credencial.
+**[Antonio (@antoniosdn)](https://github.com/antoniosdn)** — [PR #1](https://github.com/alucardigo/fluig-mcp/pull/1)
+
+Diagnosticou que o `fetch` do Node deriva o SNI e a verificação do certificado **da URL**, não do
+header `Host` — então chamar pelo IP fixado quebrava toda requisição HTTPS. O sintoma parecia
+instabilidade de rede, e foi tratado como tal por bastante tempo antes de ele apontar a causa.
+A correção foi estendida no merge para o cliente SOAP, onde o mesmo defeito existia.
+
+Do fork dele vieram também três decisões de projeto que este repositório adotou:
+**configuração sem defaults** (endpoint ou senha embutidos são vazamento esperando acontecer),
+**modo somente leitura** e **`--list` auditável sem credencial** — a ideia de que a superfície de
+ferramentas precisa ser inspecionável antes de o servidor receber uma senha, hoje verificada no CI.
+
+Contribuições são bem-vindas: veja [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Licença
 
