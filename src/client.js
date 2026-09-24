@@ -1,20 +1,32 @@
 import soap from 'soap';
 import dns from 'node:dns/promises';
 import net from 'node:net';
+// O `fetch` vem do pacote undici, não do global do Node. Os dois são a mesma implementação,
+// mas instâncias DIFERENTES: passar um Agent do pacote para o fetch global dá
+// UND_ERR_INVALID_ARG, porque o dispatcher precisa ser da mesma cópia da undici.
+import { Agent, fetch } from 'undici';
 import { readFileSync, writeFileSync } from 'node:fs';
 
 /**
  * Cliente da API do TOTVS Fluig — headless (sem IDE). Replica o protocolo da
  * extensão fluig-vscode-extension (Fluiggers).
  *
- * Resiliência de REDE (o problema real do o servidor de homologação): o hostname resolve por DNS
- * interno com "split-horizon" que OSCILA — às vezes devolve um IP inalcançável
- * (rede interna 172.16.x fora da VPN) ou simplesmente estoura timeout, mesmo com
- * o servidor no ar. Em vez de confiar num único lookup, o cliente resolve o IP
- * ele mesmo: junta candidatos (IP aprendido + DNS + seeds), TESTA conexão TCP em
- * cada um em paralelo e fixa o primeiro alcançável (Host header preservado p/ o
- * vhost). Aprende o bom IP por ~60s e, em erro, re-sonda (self-heal). Cobre fetch
- * (REST) e node-soap. Além disso, todas as chamadas passam por retry com backoff.
+ * RESILIÊNCIA DE REDE. O hostname costuma resolver por DNS interno com "split-horizon" que
+ * OSCILA: às vezes devolve um IP inalcançável (rede interna fora da VPN) ou simplesmente
+ * estoura timeout, mesmo com o servidor no ar. Em vez de confiar num único lookup, o cliente
+ * junta candidatos (IP aprendido + DNS + seeds de FLUIG_IPS), TESTA conexão TCP em cada um em
+ * paralelo e elege o primeiro alcançável. Aprende o bom endereço por ~60 s e, em erro,
+ * re-sonda (self-heal). Todas as chamadas passam por retry com backoff.
+ *
+ * ⚠️ A URL da requisição usa SEMPRE o HOSTNAME, nunca o IP: o `fetch` do Node deriva o SNI e a
+ * validação do certificado da URL (não do header `Host`), e o IPS de rede costuma bloquear
+ * acesso por IP. O endereço sondado é aplicado na CAMADA DE CONEXÃO, por um dispatcher com
+ * lookup fixo e `servername` do hostname — ver `_dispatcherPara()`.
+ *
+ * ⚠️ ALCANCE: esse pinning vale para o REST (fetch). O cliente SOAP (node-soap) usa a pilha
+ * http/https do Node e hoje resolve o hostname por conta própria — nele vale o hostname e a
+ * validação de certificado, mas NÃO o endereço sondado. Em ambiente que depende de
+ * FLUIG_IPS para alcançar o servidor, as ferramentas SOAP podem falhar enquanto as REST passam.
  */
 
 async function retry(fn, tries = 4, baseMs = 400) {
@@ -99,11 +111,18 @@ export class FluigClient {
    *  IP público, então fetch por IP quebra a validação TLS (ERR_TLS_CERT_ALTNAME_INVALID).
    *  O truque de "conectar por IP verificado" existe pro DNS INTERNO instável do o servidor de homologação
    *  (HTTP puro, sem TLS) — domínio público de prod resolve normal, não precisa disso. */
+  /**
+   * Elege um endereço alcançável e o mantém por ~60 s.
+   *
+   * Vale também para HTTPS. Antes, https saía daqui sem sondar nada, porque falar direto no IP
+   * quebrava o certificado — com o dispatcher (ver _dispatcherPara) isso deixou de ser um
+   * dilema: conecta-se no IP sondado apresentando o hostname no SNI. `base` continua sendo
+   * montado pelo hostname; quem usa o IP é a camada de conexão.
+   */
   async _liveBase() {
-    if (this._proto === 'https:') return { base: `${this._proto}//${this._hostHeader}` };
     if (this._live && Date.now() - this._live.at < 60_000) return this._live;
     const ip = await pickIp(this._hostname, this._port, this._seeds, this._live?.ip);
-    this._live = { ip, base: `${this._proto}//${ip}:${this._port}`, at: Date.now() };
+    this._live = { ip, base: `${this._proto}//${this._hostHeader}`, at: Date.now() };
     return this._live;
   }
 
@@ -111,24 +130,61 @@ export class FluigClient {
 
   /** fetch resiliente: resolve IP verificado + injeta Host (vhost) + retry; re-sonda em falha. */
   /**
-   * Fetch resiliente: TCP-proba um endereço alcançável, mas CHAMA PELO HOSTNAME.
+   * Dispatcher que CONECTA no IP sondado mas APRESENTA o hostname no TLS.
    *
-   * Antes a chamada ia direto no IP fixado. Isso causava dois problemas reais:
-   *   1. o IPS/FortiGuard da MIP bloqueia acesso por IP ("Web Filter Violation", categoria
-   *      "Unrated") — pelo hostname a mesma chamada passa;
-   *   2. em HTTPS o certificado não bate com o IP (TLS/SNI), então prod falhava por motivo
-   *      que parecia rede.
-   * A sonda de IP continua valendo: ela diz SE há caminho vivo (e re-sonda quando cai), mas
-   * quem vai na URL é o hostname.
+   * É o que permite ter as duas propriedades ao mesmo tempo:
+   *  - a URL carrega o hostname, então o SNI e a validação do certificado usam o nome (o
+   *    `fetch` do Node deriva os dois da URL, não do header `Host`);
+   *  - a conexão vai para o endereço que `pickIp()` provou estar vivo, então `FLUIG_IPS` e a
+   *    re-sondagem continuam servindo para alguma coisa quando o DNS interno está ruim.
    *
-   * Crédito: correção trazida do fork de Antonio (antoniosdn/fluig-mcp), commit 95a32af.
+   * Sem isto, escolher um dos dois quebrava o outro: pelo IP na URL o certificado não bate
+   * (e o IPS bloqueia acesso por IP); só pelo hostname, quem escolhe o endereço é o resolvedor
+   * do Node e o endereço sondado é descartado em silêncio.
+   *
+   * O Agent é cacheado por IP: criar um por requisição abriria um pool de conexões novo a cada
+   * chamada.
+   */
+  _dispatcherPara(ip) {
+    if (!ip || ip === this._hostname) return undefined;   // nada a fixar
+    if (this._dispatchers?.ip === ip) return this._dispatchers.agent;
+    this._dispatchers?.agent?.close?.().catch(() => {});  // descarta o pool do IP anterior
+    const agent = new Agent({
+      connect: {
+        servername: this._hostname,                        // SNI pelo NOME, não pelo IP
+        // Assinatura do dns.lookup do Node: com `all` devolve lista, sem `all` devolve
+        // (endereço, família). Responder só uma das formas dá UND_ERR_INVALID_ARG.
+        lookup: (_hostname, opts, cb) => {
+          const family = net.isIPv6(ip) ? 6 : 4;
+          if (opts && opts.all) cb(null, [{ address: ip, family }]);
+          else cb(null, ip, family);
+        },
+      },
+    });
+    this._dispatchers = { ip, agent };
+    return agent;
+  }
+
+  /**
+   * Fetch resiliente: sonda um endereço alcançável, CHAMA PELO HOSTNAME e CONECTA no endereço
+   * sondado.
+   *
+   * Chamar pelo hostname corrige dois problemas reais: o IPS bloqueia acesso por IP
+   * ("Web Filter Violation"), e em HTTPS o certificado é emitido para o nome, não para o IP.
+   * Crédito dessa parte: Antonio (antoniosdn/fluig-mcp), PR #1.
+   *
+   * Mas trocar o IP pelo hostname na URL, sozinho, entregava a escolha do endereço ao
+   * resolvedor do Node e tornava `FLUIG_IPS` código morto — apontado na revisão do PR #1 por
+   * sourcery-ai e qodo-code-review, e confirmado aqui. Por isso a conexão é fixada via
+   * dispatcher, preservando as duas garantias.
    */
   async _fetch(path, opts = {}) {
     return retry(async () => {
-      await this._liveBase();               // só para garantir que existe caminho vivo
+      const { ip } = await this._liveBase();
       const headers = { ...(opts.headers || {}), Host: this._hostHeader };
+      const dispatcher = this._dispatcherPara(ip);
       try {
-        return await fetch(`${this.host}${path}`, { ...opts, headers });
+        return await fetch(`${this.host}${path}`, { ...opts, headers, ...(dispatcher ? { dispatcher } : {}) });
       } catch (e) {
         this._bustIp(); // o endereço sondado pode ter caído: re-sonda na próxima tentativa
         throw e;
