@@ -44,6 +44,21 @@ async function retry(fn, tries = 4, baseMs = 400) {
   throw lastErr;
 }
 
+/** Cookie parado há mais que isto é revalidado com um ping antes de ser reaproveitado. */
+const SESSAO_REVALIDAR_MS = 20 * 60_000;
+
+/**
+ * True quando a resposta significa "sua sessão acabou", e não uma resposta de verdade.
+ *
+ * O Fluig puro responde 401 ou devolve a página de login; um Fluig atrás do Fluig Identity
+ * (SAML) responde 200 com um formulário que se auto-submete para `fluigidentity.com`. Nenhum
+ * dos dois é erro da aplicação: quem chamou deve logar de novo e repetir a requisição.
+ */
+export function sessaoExpirada(status, text = '') {
+  if (status === 401) return true;
+  return /SAMLRequest|receiveSSORequest|fluigidentity\.com|j_security_check|name="j_username"|<title>\s*Login/i.test(text);
+}
+
 const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
 
 /** Testa conexão TCP a um IP:porta. Resolve true/false, nunca lança. */
@@ -96,6 +111,7 @@ export class FluigClient {
     this.companyId = cfg.companyId;
     this.userCode = cfg.userCode || cfg.user;
     this._cookie = null;
+    this._cookieAt = 0; // quando o cookie foi confirmado válido pela última vez
     this._soap = {};
     const u = new URL(this.host);
     this._proto = u.protocol;                       // 'http:' | 'https:'
@@ -209,7 +225,15 @@ export class FluigClient {
   }
 
   async login() {
-    if (this._cookie) return this._cookie;
+    if (this._cookie) {
+      if (Date.now() - this._cookieAt < SESSAO_REVALIDAR_MS) return this._cookie;
+      // Parado tempo suficiente para ter expirado no servidor: confirma antes de reaproveitar.
+      if (await this._sessaoViva(this._cookie)) {
+        this._cookieAt = Date.now();
+        return this._cookie;
+      }
+      this._descartarSessao();
+    }
     // Sem senha configurada, NÃO tentar: uma tentativa de login com credencial ausente/errada
     // gasta uma das 3 do lockoutThreshold do AD. Falhar aqui é de graça; falhar na rede custa
     // a conta do usuário (incidente de data omitida).
@@ -239,7 +263,10 @@ export class FluigClient {
       lastStatus = r.status;
       const setCookies = typeof r.headers.getSetCookie === 'function' ? r.headers.getSetCookie() : [];
       this._cookie = setCookies.map(c => c.split(';')[0]).join('; ');
-      if (/JSESSIONIDSSO|jwt\.token/.test(this._cookie)) return this._cookie;
+      if (/JSESSIONIDSSO|jwt\.token/.test(this._cookie)) {
+        this._cookieAt = Date.now();
+        return this._cookie;
+      }
       this._cookie = null;
       // 200 sem cookie de SSO = o Fluig respondeu e RECUSOU a credencial. Abortar já:
       // insistir aqui queima tentativas do AD e bloqueia a conta do usuário.
@@ -255,6 +282,30 @@ export class FluigClient {
     throw new Error(`Falha no login (HTTP ${lastStatus}). Confira host/usuário/senha.`);
   }
 
+  /**
+   * Descarta a sessão em memória. Os clientes SOAP vão junto: cada um carrega o cookie antigo
+   * num header fixo e precisa ser recriado depois do novo login.
+   */
+  _descartarSessao() {
+    this._cookie = null;
+    this._cookieAt = 0;
+    this._soap = {};
+  }
+
+  /** Pergunta ao servidor se `cookie` ainda abre sessão (sem seguir redirecionamento). */
+  async _sessaoViva(cookie) {
+    try {
+      const r = await this._fetch('/portal/p/api/servlet/ping', {
+        method: 'POST',
+        headers: { Cookie: cookie },
+        redirect: 'manual',
+      });
+      return r.ok && (await r.text()).includes('pong');
+    } catch {
+      return false;
+    }
+  }
+
   async ping() {
     const cookie = await this.login();
     const r = await this._fetch('/portal/p/api/servlet/ping', { method: 'POST', headers: { Cookie: cookie } });
@@ -262,17 +313,27 @@ export class FluigClient {
   }
 
   async _rest(path, { method = 'GET', body, form = false } = {}) {
-    const cookie = await this.login();
-    const headers = { Cookie: cookie, Accept: 'application/json' };
+    const headers = { Cookie: await this.login(), Accept: 'application/json' };
     if (body) headers['Content-Type'] = form ? 'application/x-www-form-urlencoded' : 'application/json';
     // O IP "vivo" cacheado por _liveBase() às vezes cai numa rota que o IPS/Fortinet do
     // cliente bloqueia ("Web Filter Violation" / categoria "Unrated" — visto acessando
     // por IP direto em vez de hostname). Isso se disfarça de "dataset não encontrado" pra
     // quem só olha o JSON parse falhar. Detecta a assinatura do bloqueio e força reprova de
     // IP + retry antes de desistir — um IP diferente normalmente não está bloqueado.
+    // Sessão expirada (401, página de login ou o desvio SAML do Fluig Identity) não é bloqueio
+    // de rede: loga de novo e repete UMA vez. Se continuar expirada, devolve o _raw em vez de
+    // insistir — novo login em laço gastaria tentativas do AD.
+    let relogou = false;
     for (let attempt = 0; attempt < 3; attempt++) {
       const r = await this._fetch(path, { method, headers, body });
       const text = await r.text();
+      if (!relogou && sessaoExpirada(r.status, text)) {
+        relogou = true;
+        this._descartarSessao();
+        headers.Cookie = await this.login();
+        attempt--; // a sessão expirada não conta contra as tentativas do bloqueio de rede
+        continue;
+      }
       try { return JSON.parse(text); } catch { /* segue pro fallback abaixo */ }
       const blocked = /FortiGuard|Web Filter Violation|Web Page Blocked/i.test(text);
       if (blocked && attempt < 2) { this._bustIp(); continue; }
@@ -1024,12 +1085,18 @@ export class FluigClient {
    * Devolve { status, text, contentType }.
    */
   async _restRaw(path, { method = 'GET', body, contentType, accept } = {}) {
-    const cookie = await this.login();
-    const headers = { Cookie: cookie };
+    const headers = { Cookie: await this.login() };
     if (accept) headers.Accept = accept;
     if (body !== undefined && contentType) headers['Content-Type'] = contentType;
-    const r = await this._fetch(path, { method, headers, body });
-    const text = await r.text();
+    let r = await this._fetch(path, { method, headers, body });
+    let text = await r.text();
+    if (sessaoExpirada(r.status, text)) {
+      // Mesma regra do _rest(): novo login e UMA repetição.
+      this._descartarSessao();
+      headers.Cookie = await this.login();
+      r = await this._fetch(path, { method, headers, body });
+      text = await r.text();
+    }
     return { status: r.status, text, contentType: r.headers.get('content-type') || '' };
   }
 
@@ -1293,8 +1360,7 @@ export class FluigClient {
   /** P0#1 — Descarta a sessão em memória e força novo login na próxima chamada. */
   async sessionReset() {
     const antes = this._cookie ? this._cookie.split('; ').map(c => c.split('=')[0]) : [];
-    this._cookie = null;
-    this._soap = {};
+    this._descartarSessao();
     this._bustIp?.();
     const novo = await this.login();
     return {
