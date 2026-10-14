@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { entregarTexto, MAX_CHARS_PADRAO, pastaSaidaPadrao } from '../src/saida.js';
 
@@ -33,10 +33,19 @@ test('com destino grava o conteúdo inteiro dentro da pasta base (criando subpas
   assert.equal(entregarTexto('y', { destino: 'sub/rel.txt', base: dir }).arquivo, join(dir, 'sub', 'rel.txt'));
 });
 
-test('a pasta padrão é uma subpasta própria, não a pasta do projeto', () => {
-  // Gravar direto na pasta onde o MCP roda deixaria sobrescrever package.json ou .git/hooks.
-  assert.equal(pastaSaidaPadrao({}, '/projeto'), join('/projeto', 'fluig-mcp-saida'));
-  assert.equal(pastaSaidaPadrao({ FLUIG_SAIDA_DIR: '/saidas' }, '/projeto'), '/saidas');
+test('a pasta padrão fica na home do usuário, não na pasta onde o MCP roda', () => {
+  // A pasta de trabalho é o projeto (dava para sobrescrever .git/hooks) ou "/" (Claude Desktop no macOS,
+  // onde criar a pasta falha com EACCES). A home é do usuário e sempre gravável.
+  assert.equal(pastaSaidaPadrao({}, '/home/fulano'), join('/home/fulano', 'fluig-mcp-saida'));
+  assert.equal(pastaSaidaPadrao({ FLUIG_SAIDA_DIR: '/saidas' }, '/home/fulano'), '/saidas');
+  assert.equal(pastaSaidaPadrao({}), join(homedir(), 'fluig-mcp-saida'));
+});
+
+test('pasta de saída que não dá para criar vira erro que cita FLUIG_SAIDA_DIR', (t) => {
+  const dir = pasta(t);
+  const arquivo = join(dir, 'sou-um-arquivo');
+  writeFileSync(arquivo, '');
+  assert.throws(() => entregarTexto('x', { destino: 'a.txt', base: join(arquivo, 'saida') }), /FLUIG_SAIDA_DIR/);
 });
 
 test('destino fora da pasta base é recusado (o conteúdo vem do servidor; não pode virar ~/.bashrc)', (t) => {

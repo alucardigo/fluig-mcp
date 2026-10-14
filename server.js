@@ -38,7 +38,7 @@ const str = (description) => ({ type: 'string', description });
 const num = (description) => ({ type: 'number', description });
 // Parâmetros comuns das ferramentas que devolvem texto grande (ver src/saida.js).
 const SAIDA = {
-  destino: str('arquivo para gravar o conteúdo inteiro, dentro de FLUIG_SAIDA_DIR (padrão: ./fluig-mcp-saida); a resposta traz só o resumo (opcional)'),
+  destino: str('arquivo para gravar o conteúdo inteiro, dentro de FLUIG_SAIDA_DIR (padrão: ~/fluig-mcp-saida); a resposta traz só o resumo (opcional)'),
   maxChars: num('máximo de caracteres na resposta inline (opcional; padrão 20000)'),
 };
 
