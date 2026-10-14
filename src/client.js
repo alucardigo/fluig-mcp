@@ -95,6 +95,7 @@ export class FluigClient {
     this.pass = cfg.pass;
     this.companyId = cfg.companyId;
     this.userCode = cfg.userCode || cfg.user;
+    this._userCodeOrigem = cfg.userCode ? 'FLUIG_USERCODE' : null; // null = ainda não descoberto
     this._cookie = null;
     this._soap = {};
     const u = new URL(this.host);
@@ -239,7 +240,10 @@ export class FluigClient {
       lastStatus = r.status;
       const setCookies = typeof r.headers.getSetCookie === 'function' ? r.headers.getSetCookie() : [];
       this._cookie = setCookies.map(c => c.split(';')[0]).join('; ');
-      if (/JSESSIONIDSSO|jwt\.token/.test(this._cookie)) return this._cookie;
+      if (/JSESSIONIDSSO|jwt\.token/.test(this._cookie)) {
+        await this._descobrirUserCode(this._cookie);
+        return this._cookie;
+      }
       this._cookie = null;
       // 200 sem cookie de SSO = o Fluig respondeu e RECUSOU a credencial. Abortar já:
       // insistir aqui queima tentativas do AD e bloqueia a conta do usuário.
@@ -253,6 +257,34 @@ export class FluigClient {
       if (attempt < 2) this._bustIp();
     }
     throw new Error(`Falha no login (HTTP ${lastStatus}). Confira host/usuário/senha.`);
+  }
+
+  /**
+   * Código do colaborador (colleagueId/userId das rotas SOAP) a partir da sessão, quando
+   * FLUIG_USERCODE não foi definido. O código costuma ser a matrícula, não o login: com o login no
+   * lugar, getCardIndexesWithoutApprover devolve `result: null` e fluig_form_list sai vazio sem erro
+   * (medido no Fluig 1.7.1: 0 formulários com o login, 112 com o código).
+   * Usa user-info e não /api/public/2.0/users/getCurrent: a getCurrent devolve também password,
+   * tokenAccess e tokenSecret. Roda uma vez por processo; falhar aqui não derruba o login.
+   */
+  async _descobrirUserCode(cookie) {
+    if (this._userCodeOrigem) return;
+    this._userCodeOrigem = 'login';
+    try {
+      const r = await this._fetch('/authentication/api/v1/login/user-info', {
+        headers: { Cookie: cookie, Accept: 'application/json' },
+      });
+      const code = r.ok ? (await r.json())?.code : undefined;
+      if (code) {
+        this.userCode = String(code);
+        this._userCodeOrigem = 'sessão';
+        return;
+      }
+    } catch { /* cai no aviso abaixo */ }
+    console.error(
+      `fluig-mcp: não consegui descobrir o código do colaborador pela sessão; usando o login (${this.user}). `
+      + 'Se listas de formulário vierem vazias, defina FLUIG_USERCODE com o código do colaborador.'
+    );
   }
 
   async ping() {
@@ -714,9 +746,10 @@ export class FluigClient {
     if (this.companyId != null && parseInt(this.companyId, 10) !== -1) {
       return { companyId: parseInt(this.companyId, 10), colleagueId: this.userCode || this.user };
     }
-    const j = await this._rest(`/portal/api/rest/wcmservice/rest/user/findUserByLogin/?username=${encodeURIComponent(this.user)}&password=${encodeURIComponent(this.pass)}&login=${encodeURIComponent(this.user)}`);
-    const c = j.content || j;
-    return { companyId: parseInt(c.tenantId, 10), colleagueId: String(c.userCode) };
+    // Antes ia por findUserByLogin?…&password=…: a senha na URL acaba em log de proxy e de servidor.
+    // user-info resolve o mesmo pela sessão (tenantId e code medidos no Fluig 1.7.1).
+    const u = await this._rest('/authentication/api/v1/login/user-info');
+    return { companyId: parseInt(u.tenantId, 10), colleagueId: String(u.code) };
   }
 
   /**
@@ -1316,6 +1349,7 @@ export class FluigClient {
     return {
       ambiente: this.envName, isProd: this.isProd, host: this.host,
       cookies: nomes, temJwtToken: nomes.includes('jwt.token'), usuario,
+      colleagueId: this.userCode, colleagueIdOrigem: this._userCodeOrigem,
     };
   }
 
