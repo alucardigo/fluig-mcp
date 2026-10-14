@@ -33,19 +33,23 @@ cada uma na marra.
 
 ## Instalação
 
-Requer **Node.js 20+**.
+Requer **Node.js 20+**. Sem clonar nada (o `--allow-git=root` é preciso no npm 12, que bloqueia pacotes
+vindos do git por padrão; ele libera só este pacote):
+
+```bash
+npx -y --allow-git=root github:alucardigo/fluig-mcp --list
+```
+
+Ou clonando, para ler o código antes:
 
 ```bash
 git clone https://github.com/alucardigo/fluig-mcp.git
 cd fluig-mcp
 npm install
-```
-
-Inspecione o que ele faz **antes** de dar credencial a ele:
-
-```bash
 node server.js --list
 ```
+
+Inspecione o que ele faz **antes** de dar credencial a ele: o `--list` acima já faz isso.
 
 `--list` não carrega configuração nenhuma, de propósito: você consegue auditar a superfície
 inteira antes de confiar uma senha ao processo.
@@ -60,10 +64,30 @@ servidor de outra pessoa.
 |---|---|---|
 | `FLUIG_HOST` · `FLUIG_USER` · `FLUIG_PASS` | homologação (`env: "teste"`) | para usar homologação |
 | `FLUIG_HOST_PROD` · `FLUIG_USER_PROD` · `FLUIG_PASS_PROD` | produção (`env: "prod"`) | para usar produção |
+| `FLUIG_PASS_CMD` · `FLUIG_PASS_CMD_PROD` | no lugar da senha: comando que a imprime (cofre do sistema) | não |
+| `FLUIG_USERCODE` · `FLUIG_USERCODE_PROD` | código do colaborador; sem ele, é descoberto pela sessão | não |
 | `FLUIG_READONLY=1` | ambos | não — mas leia [Segurança](#segurança) |
 
 Configure um dos pares, ou os dois. Veja [`.env.example`](.env.example) para as opcionais
 (tenant, datasources JNDI, IPs semente, prefixo dos datasets descartáveis).
+
+### Senha fora do arquivo de configuração
+
+`FLUIG_PASS_CMD` (e `FLUIG_PASS_CMD_PROD`) recebe um comando cuja saída é a senha. Ele roda sem shell,
+só quando o ambiente é usado, e falha **antes** de qualquer login se o comando falhar ou não imprimir
+nada. Exemplos:
+
+| Sistema | Guardar uma vez | `FLUIG_PASS_CMD` |
+|---|---|---|
+| Linux (GNOME Keyring/KWallet) | `secret-tool store --label=fluig service fluig user seu.usuario` | `secret-tool lookup service fluig user seu.usuario` |
+| macOS (Keychain) | `security add-generic-password -s fluig -a seu.usuario -w` | `security find-generic-password -s fluig -w` |
+| [pass](https://www.passwordstore.org/) | `pass insert fluig` | `pass show fluig` |
+| 1Password CLI | (no app) | `op read op://Pessoal/Fluig/password` |
+
+No GitHub Copilot (VS Code) não precisa disso: o próprio VS Code pede a senha e a guarda (abaixo).
+
+Configuração de cada cliente (Claude Code, Codex, GitHub Copilot, Cursor, Claude Desktop):
+[docs/clientes.md](docs/clientes.md).
 
 ### Registrando no cliente MCP
 
