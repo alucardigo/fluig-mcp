@@ -54,3 +54,16 @@ test('companyId -1 resolve o tenant pela sessão, sem senha na URL', async () =>
   assert.deepEqual(await c.resolveTenant(), { companyId: 7, colleagueId: '000123' });
   assert.ok(chamadas.every((p) => !/password=/.test(p)), `senha numa URL: ${chamadas.join(' ')}`);
 });
+
+test('chamadas simultâneas logo no início esperam a descoberta do código (sem usar o login como userId)', async () => {
+  const { c } = clienteSimulado(ENV, { code: '000123' });
+  const vistos = await Promise.all([c.login(), c.login(), c.login()].map((p) => p.then(() => c.userCode)));
+  assert.deepEqual(vistos, ['000123', '000123', '000123']);
+  // Sessão já aberta e descoberta em andamento: a chamada seguinte também espera.
+  const { c: c2 } = clienteSimulado(ENV, { code: '000456' });
+  const primeira = c2.login();
+  await Promise.resolve();
+  const codigoNaSegunda = await c2.login().then(() => c2.userCode);
+  await primeira;
+  assert.equal(codigoNaSegunda, '000456');
+});
