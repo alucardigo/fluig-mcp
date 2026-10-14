@@ -37,6 +37,7 @@
   "files": [
     "server.js",
     "src/",
+    "docs/",
     ".env.example",
     "README.md",
     "SECURITY.md",
