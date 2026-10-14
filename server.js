@@ -16,6 +16,7 @@ import { loadConfig, ambientesConfigurados } from './src/config.js';
 import { FluigClient } from './src/client.js';
 import { resumoFormularios } from './src/formularios.js';
 import { consultaDataset, OPERADORES } from './src/datasetFiltros.js';
+import { entregarTexto } from './src/saida.js';
 import { readFileSync } from 'node:fs';
 
 const VERSAO = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version;
@@ -35,6 +36,11 @@ let client = null;
 const S = (props = {}, required = []) => ({ type: 'object', properties: props, required });
 const str = (description) => ({ type: 'string', description });
 const num = (description) => ({ type: 'number', description });
+// Parâmetros comuns das ferramentas que devolvem texto grande (ver src/saida.js).
+const SAIDA = {
+  destino: str('arquivo para gravar o conteúdo inteiro, dentro de FLUIG_SAIDA_DIR (padrão: ./fluig-mcp-saida); a resposta traz só o resumo (opcional)'),
+  maxChars: num('máximo de caracteres na resposta inline (opcional; padrão 20000)'),
+};
 
 const TOOLS = [
   {
@@ -59,10 +65,10 @@ const TOOLS = [
   {
     name: 'fluig_dataset_get',
     description: 'Retorna o código-fonte de um dataset CUSTOM (loadDataset).',
-    inputSchema: S({ datasetId: str('id do dataset custom') }, ['datasetId']),
-    handler: async ({ datasetId }) => {
+    inputSchema: S({ datasetId: str('id do dataset custom'), ...SAIDA }, ['datasetId']),
+    handler: async ({ datasetId, destino, maxChars }) => {
       const ds = await client.getCustomDataset(datasetId);
-      return ds.datasetImpl !== undefined ? ds.datasetImpl : ds;
+      return ds.datasetImpl !== undefined ? entregarTexto(ds.datasetImpl, { destino, maxChars }) : ds;
     },
   },
   {
@@ -441,8 +447,10 @@ const TOOLS = [
     inputSchema: S({
       processId: str('id do processo (ex: Suporte_TI)'),
       version: num('versão específica (opcional; padrão = versão corrente)'),
+      ...SAIDA,
     }, ['processId']),
-    handler: async ({ processId, version }) => client.exportProcessXml(processId, version),
+    handler: async ({ processId, version, destino, maxChars }) =>
+      entregarTexto(await client.exportProcessXml(processId, version), { destino, maxChars }),
   },
   {
     name: 'fluig_process_events_xml',
@@ -450,10 +458,11 @@ const TOOLS = [
     inputSchema: S({
       processId: str('id do processo'),
       version: num('versão específica (opcional)'),
+      ...SAIDA,
     }, ['processId']),
-    handler: async ({ processId, version }) => {
+    handler: async ({ processId, version, destino, maxChars }) => {
       const evs = await client.getProcessEventsFromXml(processId, version);
-      return { processId, total: evs.length, eventos: evs };
+      return entregarTexto(JSON.stringify({ processId, total: evs.length, eventos: evs }, null, 2), { destino, maxChars });
     },
   },
   {
