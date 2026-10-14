@@ -210,7 +210,12 @@ export class FluigClient {
   }
 
   async login() {
-    if (this._cookie) return this._cookie;
+    // Com a sessão já aberta, ainda espera a descoberta do código do colaborador: sem isso, uma chamada
+    // feita enquanto ela roda usaria o login como colleagueId/userId (inclusive em ferramentas de escrita).
+    if (this._cookie) {
+      await this._descoberta;
+      return this._cookie;
+    }
     // Sem senha configurada, NÃO tentar: uma tentativa de login com credencial ausente/errada
     // gasta uma das 3 do lockoutThreshold do AD. Falhar aqui é de graça; falhar na rede custa
     // a conta do usuário (incidente de 22/08/2026).
@@ -265,9 +270,15 @@ export class FluigClient {
    * lugar, getCardIndexesWithoutApprover devolve `result: null` e fluig_form_list sai vazio sem erro
    * (medido no Fluig 1.7.1: 0 formulários com o login, 112 com o código).
    * Usa user-info e não /api/public/2.0/users/getCurrent: a getCurrent devolve também password,
-   * tokenAccess e tokenSecret. Roda uma vez por processo; falhar aqui não derruba o login.
+   * tokenAccess e tokenSecret. Roda uma vez por processo (a promessa é compartilhada por chamadas
+   * simultâneas); falhar aqui não derruba o login.
    */
-  async _descobrirUserCode(cookie) {
+  _descobrirUserCode(cookie) {
+    this._descoberta ??= this._buscarUserCode(cookie);
+    return this._descoberta;
+  }
+
+  async _buscarUserCode(cookie) {
     if (this._userCodeOrigem) return;
     this._userCodeOrigem = 'login';
     try {
