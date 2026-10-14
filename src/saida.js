@@ -1,4 +1,5 @@
 import { closeSync, constants, lstatSync, mkdirSync, openSync, realpathSync, writeSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 /**
@@ -7,9 +8,10 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
  * texto vai inteiro para o arquivo e a resposta traz só o resumo, como os downloads binários já fazem.
  *
  * `destino` só vale DENTRO da pasta de saída: o conteúdo vem do servidor e o caminho vem do agente, então
- * um texto plantado no Fluig poderia induzir uma gravação em ~/.bashrc. A pasta padrão é uma subpasta
- * própria (fluig-mcp-saida), não a pasta onde o MCP roda — que costuma ser o projeto do usuário, com
- * package.json e .git/hooks graváveis (sobrescrever um hook vira execução de código no próximo commit).
+ * um texto plantado no Fluig poderia induzir uma gravação em ~/.bashrc. A pasta padrão é ~/fluig-mcp-saida,
+ * não a pasta onde o MCP roda: ela costuma ser o projeto do usuário, com package.json e .git/hooks graváveis
+ * (sobrescrever um hook vira execução de código no próximo commit), ou "/" em clientes como o Claude Desktop
+ * no macOS, onde nem dá para criar a pasta.
  * Links simbólicos não escapam: a pasta do arquivo é conferida pelo caminho real, e o arquivo é aberto
  * com O_NOFOLLOW (no Windows a constante não existe e só a primeira conferência vale).
  * Limite conhecido: entre a conferência e a abertura, outro processo com escrita na pasta de saída poderia
@@ -18,8 +20,8 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
  */
 export const MAX_CHARS_PADRAO = 20000;
 
-export function pastaSaidaPadrao(env = process.env, cwd = process.cwd()) {
-  return env.FLUIG_SAIDA_DIR || join(cwd, 'fluig-mcp-saida');
+export function pastaSaidaPadrao(env = process.env, home = homedir()) {
+  return env.FLUIG_SAIDA_DIR || join(home, 'fluig-mcp-saida');
 }
 
 /** Existe no disco, inclusive como link quebrado (existsSync seguiria o link e diria que não). */
@@ -45,7 +47,11 @@ function gravarDentro(base, destino, texto) {
     `destino fora da pasta de saída (${raiz}). Use um caminho dentro dela ou defina FLUIG_SAIDA_DIR.`,
   );
   if (!dentro(raiz, arquivo)) throw recusa();
-  mkdirSync(raiz, { recursive: true });
+  try {
+    mkdirSync(raiz, { recursive: true });
+  } catch (e) {
+    throw new Error(`não consegui criar a pasta de saída ${raiz} (${e.code || e.message}). Defina FLUIG_SAIDA_DIR com uma pasta gravável.`);
+  }
   const raizReal = realpathSync(raiz);
   const naBase = (p) => {
     let real;

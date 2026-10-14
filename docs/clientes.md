@@ -7,6 +7,9 @@ pacotes vindos do git por padrão; `--allow-git=root` libera só este, não as d
 
 Comece com `FLUIG_READONLY=1` e tire quando precisar escrever.
 
+As ferramentas com `destino` (XML de processo, fonte de dataset) gravam em `~/fluig-mcp-saida`; para outra pasta,
+acrescente `FLUIG_SAIDA_DIR` ao `env`.
+
 ## Claude Code
 
 ```bash
