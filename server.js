@@ -14,6 +14,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { loadConfig, ambientesConfigurados } from './src/config.js';
 import { FluigClient } from './src/client.js';
+import { resumoFormularios } from './src/formularios.js';
 import { readFileSync } from 'node:fs';
 
 const VERSAO = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version;
@@ -90,13 +91,7 @@ const TOOLS = [
     name: 'fluig_form_list',
     description: 'Lista formulários (documentId, versão, descrição, dataset). Filtro opcional.',
     inputSchema: S({ filtro: str('substring para filtrar (opcional)') }),
-    handler: async ({ filtro }) => {
-      const forms = await client.listForms();
-      const f = (filtro || '').toLowerCase();
-      return forms
-        .filter(x => !f || `${x.documentId} ${x.documentDescription || ''} ${x.datasetName || ''}`.toLowerCase().includes(f))
-        .map(x => ({ documentId: x.documentId, version: x.version, description: x.documentDescription, dataset: x.datasetName }));
-    },
+    handler: async ({ filtro }) => resumoFormularios(await client.listForms(), filtro, client.userCode),
   },
   {
     name: 'fluig_form_events',
