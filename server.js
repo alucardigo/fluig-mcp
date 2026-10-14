@@ -15,6 +15,7 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprot
 import { loadConfig, ambientesConfigurados } from './src/config.js';
 import { FluigClient } from './src/client.js';
 import { resumoFormularios } from './src/formularios.js';
+import { consultaDataset, OPERADORES } from './src/datasetFiltros.js';
 import { readFileSync } from 'node:fs';
 
 const VERSAO = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version;
@@ -66,14 +67,42 @@ const TOOLS = [
   },
   {
     name: 'fluig_dataset_run',
-    description: 'Executa um dataset (form ou custom) e retorna as linhas. fields e limit opcionais.',
+    description: 'Executa um dataset (form ou custom) e retorna as linhas. Filtre no SERVIDOR com filters '
+      + '(campo + condição: eq, ne, contains, starts, ends, between; match any = OU) e serverLimit (sqlLimit) '
+      + 'em vez de trazer tudo e cortar com limit. constraints aceita o formato cru do Fluig.',
     inputSchema: S({
       name: str('nome do dataset'),
       fields: { type: 'array', items: { type: 'string' }, description: 'colunas a retornar (opcional)' },
-      limit: num('máximo de linhas a exibir (opcional)'),
+      filters: {
+        type: 'array',
+        description: 'filtros (opcional): [{ field, op, value, valueTo }] — valueTo só em between',
+        items: {
+          type: 'object',
+          properties: {
+            field: { type: 'string' },
+            op: { type: 'string', enum: OPERADORES },
+            value: { type: 'string' },
+            valueTo: { type: 'string' },
+          },
+          required: ['field', 'op'],
+        },
+      },
+      match: { type: 'string', enum: ['all', 'any'], description: 'all = todos os filtros (padrão); any = qualquer um' },
+      constraints: {
+        type: 'array',
+        description: 'constraints cruas do Fluig (opcional): [{ field, initial, final, type: MUST|SHOULD|MUST_NOT, like }]',
+        items: { type: 'object' },
+      },
+      serverLimit: num('máximo de linhas que o SERVIDOR devolve (vira a constraint sqlLimit; opcional)'),
+      order: {
+        type: 'object',
+        description: 'ordem (opcional): { field, desc }',
+        properties: { field: { type: 'string' }, desc: { type: 'boolean' } },
+      },
+      limit: num('máximo de linhas a exibir depois de buscar (opcional)'),
     }, ['name']),
-    handler: async ({ name, fields = [], limit = 0 }) => {
-      const { columns, values } = await client.runDataset(name, { fields });
+    handler: async ({ name, limit = 0, ...args }) => {
+      const { columns, values } = await client.runDataset(name, consultaDataset(args));
       return { columns, total: values.length, values: limit > 0 ? values.slice(0, limit) : values };
     },
   },
