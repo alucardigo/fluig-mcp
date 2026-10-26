@@ -17,6 +17,7 @@ import { FluigClient } from './src/client.js';
 import { resumoFormularios } from './src/formularios.js';
 import { consultaDataset, OPERADORES } from './src/datasetFiltros.js';
 import { entregarTexto } from './src/saida.js';
+import { client, comCliente } from './src/despacho.js';
 import { readFileSync } from 'node:fs';
 
 const VERSAO = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version;
@@ -24,14 +25,14 @@ const VERSAO = JSON.parse(readFileSync(new URL('./package.json', import.meta.url
 // Um FluigClient por ambiente, criado SOB DEMANDA. Preguiçoso de propósito: `--list` e `--help`
 // precisam rodar sem nenhuma credencial, para que qualquer pessoa possa auditar o que este
 // servidor faz ANTES de entregar uma senha a ele. Instanciar no topo quebraria isso.
-// `client` é o alvo ATIVO da chamada em curso — o dispatcher troca a referência conforme o
-// `env` recebido, então todo handler que usa `client.xxx(...)` funciona sem alteração.
+// `client` (src/despacho.js) é o cliente da chamada EM CURSO: cada chamada roda no seu próprio
+// contexto, então todo handler que usa `client.xxx(...)` funciona sem alteração — e duas chamadas
+// simultâneas com env diferentes não trocam de servidor no meio.
 const clientsByEnv = {};
 function clienteDe(env) {
   if (!clientsByEnv[env]) clientsByEnv[env] = new FluigClient(loadConfig(env));
   return clientsByEnv[env];
 }
-let client = null;
 
 const S = (props = {}, required = []) => ({ type: 'object', properties: props, required });
 const str = (description) => ({ type: 'string', description });
@@ -1249,13 +1250,14 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       isError: true,
     };
   }
+  let alvo;
   try {
-    client = clienteDe(args.env);
+    alvo = clienteDe(args.env);
   } catch (e) {
     return { content: [{ type: 'text', text: 'ERRO: ' + (e?.message || e) }], isError: true };
   }
   try {
-    const out = await tool.handler(args);
+    const out = await comCliente(alvo, () => tool.handler(args));
     return { content: [{ type: 'text', text: typeof out === 'string' ? out : JSON.stringify(out, null, 2) }] };
   } catch (e) {
     return { content: [{ type: 'text', text: 'ERRO: ' + (e?.message || e) }], isError: true };
