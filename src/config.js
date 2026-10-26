@@ -77,7 +77,10 @@ export function loadConfig(alvo = 'teste', env = process.env) {
     user,
     pass: String(env[vPass]),
     companyId: Number(env[isProd ? 'FLUIG_COMPANY_PROD' : 'FLUIG_COMPANY'] ?? env.FLUIG_COMPANY ?? 1),
-    userCode: String(env[isProd ? 'FLUIG_USERCODE_PROD' : 'FLUIG_USERCODE'] || user).trim(),
+    // Vazio = descobrir pela sessão no primeiro login (ver FluigClient._descobrirUserCode). O código
+    // do colaborador costuma ser a matrícula, diferente do login; usar o login no lugar dele faz as
+    // rotas SOAP que filtram por colleagueId devolverem vazio SEM erro.
+    userCode: String(env[isProd ? 'FLUIG_USERCODE_PROD' : 'FLUIG_USERCODE'] || '').trim(),
     // IPs semente para quando o DNS interno oscila. São sempre TCP-probados antes de usar,
     // então um seed obsoleto é inofensivo. A requisição em si vai pelo HOSTNAME (ver _fetch).
     seedIps: String(env[isProd ? 'FLUIG_IPS_PROD' : 'FLUIG_IPS'] || '')

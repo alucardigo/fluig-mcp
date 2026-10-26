@@ -3,12 +3,17 @@ import assert from 'node:assert/strict';
 import { FluigClient, sessaoExpirada } from '../src/client.js';
 import { loadConfig } from '../src/config.js';
 
-/** Cliente apontado para um host que nunca é contatado: os testes daqui ficam offline. */
+/**
+ * Cliente apontado para um host que nunca é contatado: os testes daqui ficam offline.
+ * FLUIG_USERCODE definido desliga a descoberta do colleagueId pela sessão (user-info), que é
+ * coberta em userCode.test.js; aqui o servidor falso só precisa responder às rotas da sessão.
+ */
 function novoCliente() {
   return new FluigClient(loadConfig('teste', {
     FLUIG_HOST: 'http://fluig.exemplo.com.br:8080',
     FLUIG_USER: 'fulano',
     FLUIG_PASS: 'senha-homolog',
+    FLUIG_USERCODE: 'fulano',
   }));
 }
 
