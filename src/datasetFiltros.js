@@ -13,6 +13,9 @@ const LIKE = {
   ends: (v) => `%${v}`,
 };
 export const OPERADORES = ['eq', 'ne', 'contains', 'starts', 'ends', 'between'];
+export const TIPOS = ['MUST', 'SHOULD', 'MUST_NOT'];
+// O servidor lê o sqlLimit com Integer.parseInt: acima disso (ou "2.5", "1e+21") a falha SOAP não diz nada útil.
+export const MAX_SERVER_LIMIT = 2 ** 31 - 1;
 
 // "contraintType" (sic) é o nome do campo no WSDL do Fluig.
 const constraint = (fieldName, initialValue, finalValue, contraintType, likeSearch = false) => (
@@ -62,15 +65,43 @@ export function buildConstraints(filters = [], match = 'all') {
   return lista(filters, 'filters').map((f) => filtroParaConstraint(f, positiva));
 }
 
+/**
+ * Constraint crua: { field, initial, final, type, like }, ou os nomes do WSDL (fieldName, initialValue,
+ * finalValue, contraintType, likeSearch), que é o que a extensão VS Code e quem copia do SOAP mandam.
+ */
+function constraintCrua(k) {
+  const field = String(k?.field ?? k?.fieldName ?? '').trim();
+  // Sem field, ia "undefined" como nome do campo: erro de SQL que alguns datasets engolem e devolvem vazio.
+  if (!field) throw new Error('Constraint crua sem field (ou fieldName).');
+  const tipoInformado = k.type ?? k.contraintType;
+  const tipo = String(tipoInformado ?? 'MUST').trim().toUpperCase();
+  // O SOAP transforma qualquer type desconhecido em MUST: "MUST NOT" viraria inclusão em vez de exclusão.
+  if (!TIPOS.includes(tipo)) throw new Error(`Constraint "${field}" com type "${tipoInformado}" inválido. Use: ${TIPOS.join(', ')}.`);
+  const inicial = String(k.initial ?? k.initialValue ?? '');
+  const final = String(k.final ?? k.finalValue ?? inicial);
+  // A extensão VS Code manda likeSearch como texto: !!"false" é true e a igualdade viraria "contém".
+  const like = String(k.like ?? k.likeSearch).toLowerCase() === 'true';
+  return constraint(field, inicial, final, tipo, like);
+}
+
+function limiteDoServidor(serverLimit) {
+  if (serverLimit == null) return [];
+  const n = Number(serverLimit);
+  if (!Number.isInteger(n) || n < 1 || n > MAX_SERVER_LIMIT) {
+    throw new Error(`serverLimit deve ser inteiro entre 1 e ${MAX_SERVER_LIMIT}; veio "${serverLimit}".`);
+  }
+  return [constraint('sqlLimit', String(n), String(n), 'MUST')];
+}
+
 /** Monta fields/constraints/order do getDataset a partir dos argumentos da ferramenta. */
-export function consultaDataset({ fields = [], filters, match, constraints = [], serverLimit, order } = {}) {
-  const cruas = constraints.map((k) => constraint(
-    String(k.field), String(k.initial ?? ''), String(k.final ?? k.initial ?? ''), k.type || 'MUST', !!k.like,
-  ));
-  const limite = Number(serverLimit) > 0 ? [constraint('sqlLimit', String(serverLimit), String(serverLimit), 'MUST')] : [];
+export function consultaDataset({ fields = [], filters, match, constraints, serverLimit, order } = {}) {
   return {
     fields,
-    constraints: [...cruas, ...buildConstraints(filters, match), ...limite],
+    constraints: [
+      ...lista(constraints, 'constraints').map(constraintCrua),
+      ...buildConstraints(filters, match),
+      ...limiteDoServidor(serverLimit),
+    ],
     order: order?.field ? [order.desc ? `${order.field};desc` : order.field] : [],
   };
 }

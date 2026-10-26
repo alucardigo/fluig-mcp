@@ -94,3 +94,47 @@ test('filters que não é lista é erro claro', () => {
   assert.throws(() => consultaDataset({ filters: 'a=1' }), /filters .* lista/);
   assert.deepEqual(consultaDataset({ filters: null }).constraints, []);
 });
+
+const crua = (k) => consultaDataset({ constraints: [k] }).constraints;
+
+test('constraint crua: type validado em qualquer caixa; desconhecido é erro (o SOAP viraria MUST)', () => {
+  assert.deepEqual(crua({ field: 'a', initial: 'x', type: 'should' }), [c('a', 'x', 'x', 'SHOULD')]);
+  assert.deepEqual(crua({ field: 'a', initial: 'x', type: 'Must_Not' }), [c('a', 'x', 'x', 'MUST_NOT')]);
+  assert.deepEqual(crua({ field: 'a', initial: 'x' }), [c('a', 'x', 'x', 'MUST')]);
+  // "MUST NOT" é o rótulo do seletor da extensão VS Code: no SOAP a exclusão viraria inclusão.
+  for (const type of ['MUST NOT', 'NOT', 'OR', '']) {
+    assert.throws(() => crua({ field: 'status', initial: 'Cancelado', type }), /type .* inválido/, type);
+  }
+});
+
+test('constraint crua aceita os nomes do WSDL e exige field', () => {
+  assert.deepEqual(crua({
+    fieldName: 'colleagueId', initialValue: 'a', finalValue: 'b', contraintType: 'MUST_NOT', likeSearch: 'true',
+  }), [c('colleagueId', 'a', 'b', 'MUST_NOT', true)]);
+  assert.deepEqual(crua({ field: 'a', initial: '1', final: '9' }), [c('a', '1', '9')]);
+  assert.throws(() => crua({ initial: 'x' }), /sem field/);
+  assert.throws(() => crua({ field: '  ', initial: 'x' }), /sem field/);
+  assert.throws(() => consultaDataset({ constraints: { field: 'a' } }), /constraints .* lista/);
+});
+
+test('constraint crua: like só é true com true ou "true" ("false" não vira contém)', () => {
+  const like = (v) => crua({ field: 'a', initial: 'x', like: v })[0].likeSearch;
+  assert.equal(like(true), true);
+  assert.equal(like('true'), true);
+  assert.equal(like('TRUE'), true);
+  for (const v of ['false', false, undefined, 'sim', 0, 1]) assert.equal(like(v), false, String(v));
+});
+
+test('serverLimit inteiro >= 1; fração, zero ou fora do int do servidor é erro', () => {
+  assert.deepEqual(consultaDataset({ serverLimit: 5 }).constraints, [c('sqlLimit', '5', '5')]);
+  assert.deepEqual(consultaDataset({ serverLimit: '50' }).constraints, [c('sqlLimit', '50', '50')]);
+  assert.deepEqual(consultaDataset({ serverLimit: null }).constraints, []);
+  // O servidor lê o sqlLimit com Integer.parseInt: "2.5" e "1e+21" quebram lá com falha SOAP obscura.
+  for (const n of [0, -1, 2.5, 1e21, 2 ** 31, 'abc', '']) {
+    assert.throws(() => consultaDataset({ serverLimit: n }), /serverLimit/, String(n));
+  }
+});
+
+test('env e limit não entram na consulta ao servidor', () => {
+  assert.deepEqual(consultaDataset({ env: 'teste', limit: 3, name: 'colleague' }), { fields: [], constraints: [], order: [] });
+});
