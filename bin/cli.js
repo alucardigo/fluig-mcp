@@ -1,177 +1,224 @@
 #!/usr/bin/env node
 /**
- * Command-line front end for the same client the MCP server uses.
+ * Linha de comando sobre o mesmo cliente que o servidor MCP usa.
  *
- * Handy for a quick check that credentials and connectivity work before wiring the MCP
- * server into an agent, and for dumping datasets, forms and process definitions to disk.
+ * Serve para conferir credencial e conectividade antes de ligar o servidor MCP num agente, e para
+ * despejar datasets, formulários e definições de processo em disco.
  */
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../src/config.js';
 import { FluigClient } from '../src/client.js';
 
 const OUT_DIR = process.env.FLUIG_OUT_DIR || join(process.cwd(), 'out');
 
-const USAGE = `fluig-cli - drive TOTVS Fluig from the terminal
+const USAGE = `fluig-cli — opera o TOTVS Fluig pelo terminal
 
-  fluig-cli ping                              Check credentials and session
-  fluig-cli dataset list [filter]             List datasets
-  fluig-cli dataset get <datasetId>           Source of a custom dataset       -> out/datasets
-  fluig-cli dataset run <name> [--limit N] [--fields a,b]
-  fluig-cli form list [filter]                List forms
-  fluig-cli form events <documentId>          Form events                      -> out/forms/<id>/events
-  fluig-cli form get <documentId> <version>   Files + events                   -> out/forms/<id>
-  fluig-cli globalevent list                  List global events
-  fluig-cli process versions <processId>      Versions of a process
-  fluig-cli process events <processId>        Process events, from the definition XML
-  fluig-cli process export <processId>        Definition XML                   -> out/processes
-  fluig-cli workflow check                    Is the optional FluiggersWidget installed?
+  fluig-cli ping                                Confere credencial e sessão
+  fluig-cli dataset list [filtro]               Lista datasets
+  fluig-cli dataset get <datasetId>             Fonte de um dataset customizado   -> datasets/
+  fluig-cli dataset run <nome> [--limit N] [--fields a,b]
+                                                Executa; --limit corta o que é impresso -> datasets-run/
+  fluig-cli form list [filtro]                  Lista formulários
+  fluig-cli form events <documentId>            Eventos do formulário             -> forms/<id>/events/
+  fluig-cli form get <documentId> [versão]      Arquivos + eventos                -> forms/<id>/
+  fluig-cli globalevent list                    Lista os eventos globais
+  fluig-cli process versions <processId>        Versões de um processo
+  fluig-cli process events <processId> [versão] Eventos do processo, lidos do XML -> processes/<id>/events/
+  fluig-cli process export <processId> [versão] XML da definição                  -> processes/
+  fluig-cli workflow check                      O FluiggersWidget (opcional) está instalado?
 
-Required environment: FLUIG_HOST, FLUIG_USER, FLUIG_PASS. See README.md.`;
+Opções (em qualquer posição):
+  --env teste|prod   Ambiente (padrão: teste)
+
+Os caminhos depois de -> são relativos a ./out (ou a FLUIG_OUT_DIR).
+
+Ambiente: FLUIG_HOST, FLUIG_USER e FLUIG_PASS ou FLUIG_PASS_CMD; com --env prod, FLUIG_HOST_PROD,
+FLUIG_USER_PROD e FLUIG_PASS_PROD ou FLUIG_PASS_CMD_PROD. Veja README.md e .env.example.`;
 
 function print(x) {
   console.log(typeof x === 'string' ? x : JSON.stringify(x, null, 2));
 }
 
-async function save(relativePath, content) {
-  const full = join(OUT_DIR, relativePath);
-  await mkdir(dirname(full), { recursive: true });
-  await writeFile(full, content, 'utf8');
-  console.error(`  -> saved: ${full}`);
+// Na saída de erro, para não misturar com o que o comando imprime no stdout.
+function salvar(saida, relativo, conteudo) {
+  const arquivo = join(saida, relativo);
+  mkdirSync(dirname(arquivo), { recursive: true });
+  writeFileSync(arquivo, conteudo, 'utf8');
+  console.error(`  -> gravado: ${arquivo}`);
 }
 
-function flag(args, name) {
-  const i = args.indexOf(name);
-  return i >= 0 ? args[i + 1] : undefined;
+function salvarEventos(saida, pasta, eventos, campo) {
+  for (const e of eventos) salvar(saida, `${pasta}/${e.eventId}.js`, e[campo] || '');
 }
 
-async function main() {
-  const [, , group, action, ...rest] = process.argv;
-  if (!group || group === '--help' || group === '-h') {
+// Opções que levam valor.
+const OPCOES = ['--env', '--limit', '--fields'];
+
+/** Separa opções de posicionais. Erro aqui acontece antes do loadConfig: sem comando de senha, sem rede. */
+function lerArgs(argv) {
+  const opcoes = {};
+  const posicionais = [];
+  for (let i = 0; i < argv.length; i += 1) {
+    if (!OPCOES.includes(argv[i])) {
+      posicionais.push(argv[i]);
+      continue;
+    }
+    const valor = argv[i + 1];
+    if (valor === undefined || valor.startsWith('--')) throw new Error(`${argv[i]} precisa de um valor.`);
+    opcoes[argv[i].slice(2)] = valor;
+    i += 1;
+  }
+  const [grupo, acao, ...args] = posicionais;
+  return { grupo, acao, args, opcoes };
+}
+
+/** Cada comando recebe o cliente já autenticável e { args, opcoes, saida }. */
+export const COMANDOS = {
+  async ping(client) {
+    print(await client.ping() ? 'OK — autenticado, sessão válida.' : 'FALHOU.');
+  },
+
+  async 'dataset list'(client, { args }) {
+    const filtro = (args[0] || '').toLowerCase();
+    const todos = await client.listDatasets();
+    const linhas = todos
+      .filter((d) => !filtro || `${d.datasetId} ${d.datasetDescription || ''}`.toLowerCase().includes(filtro))
+      .map((d) => `${(d.type || '').padEnd(8)} ${d.datasetId}`);
+    print(linhas.join('\n'));
+    console.error(`\n(${linhas.length} de ${todos.length} datasets)`);
+  },
+
+  async 'dataset get'(client, { args, saida }) {
+    const id = args[0];
+    const ds = await client.getCustomDataset(id);
+    if (ds.datasetImpl === undefined) {
+      print(ds);
+      return;
+    }
+    salvar(saida, `datasets/${id}.js`, ds.datasetImpl);
+    print(ds.datasetImpl);
+  },
+
+  async 'dataset run'(client, { args, opcoes, saida }) {
+    const nome = args[0];
+    const limite = Number(opcoes.limit || 0);
+    const fields = (opcoes.fields || '').split(',').map((s) => s.trim()).filter(Boolean);
+    const { columns, values } = await client.runDataset(nome, { fields });
+    salvar(saida, `datasets-run/${nome}.json`, JSON.stringify({ columns, total: values.length, values }, null, 2));
+    print({ columns, total: values.length, sample: limite > 0 ? values.slice(0, limite) : values });
+  },
+
+  async 'form list'(client, { args }) {
+    const filtro = (args[0] || '').toLowerCase();
+    const forms = await client.listForms();
+    const linhas = forms
+      .filter((f) => !filtro || `${f.documentId} ${f.documentDescription || ''} ${f.datasetName || ''}`.toLowerCase().includes(filtro))
+      .map((f) => `${String(f.documentId).padEnd(9)} v${f.version}  ${f.documentDescription}  [ds:${f.datasetName || '-'}]`);
+    print(linhas.join('\n'));
+    console.error(`\n(${linhas.length} de ${forms.length} formulários)`);
+  },
+
+  async 'form events'(client, { args, saida }) {
+    const documentId = Number(args[0]);
+    const eventos = await client.getFormEvents(documentId);
+    salvarEventos(saida, `forms/${documentId}/events`, eventos, 'eventDescription');
+    print(eventos.map((e) => `${e.eventId} (${(e.eventDescription || '').length} caracteres)`).join('\n') || '(sem eventos)');
+  },
+
+  async 'form get'(client, { args, saida }) {
+    const documentId = Number(args[0]);
+    const versao = Number(args[1] || 1000);
+    const nomes = await client.getFormFileNames(documentId);
+    for (const nome of nomes) {
+      const b64 = await client.getFormFileBase64(documentId, versao, nome);
+      if (b64) salvar(saida, `forms/${documentId}/${nome}`, Buffer.from(b64, 'base64').toString('utf8'));
+    }
+    const eventos = await client.getFormEvents(documentId);
+    salvarEventos(saida, `forms/${documentId}/events`, eventos, 'eventDescription');
+    print({ files: nomes, events: eventos.map((e) => e.eventId) });
+  },
+
+  async 'globalevent list'(client) {
+    const eventos = await client.listGlobalEvents();
+    print(Array.isArray(eventos) ? eventos.map((e) => e.globalEventPK?.eventId).join('\n') : eventos);
+  },
+
+  async 'process versions'(client, { args }) {
+    print(await client.listProcessVersions(args[0]));
+  },
+
+  async 'process events'(client, { args, saida }) {
+    const processId = args[0];
+    const eventos = await client.getProcessEventsFromXml(processId, args[1] ? Number(args[1]) : undefined);
+    salvarEventos(saida, `processes/${processId}/events`, eventos, 'code');
+    print(eventos.map((e) => `${e.eventId} (${(e.code || '').length} caracteres)`).join('\n') || '(sem eventos)');
+  },
+
+  async 'process export'(client, { args, saida }) {
+    const processId = args[0];
+    const xml = await client.exportProcessXml(processId, args[1] ? Number(args[1]) : undefined);
+    salvar(saida, `processes/${processId}.ecm30.xml`, xml);
+    console.error(`(${xml.length} caracteres)`);
+  },
+
+  async 'workflow check'(client) {
+    print(await client.hasFluiggersWidget()
+      ? 'FluiggersWidget INSTALADO.'
+      : 'FluiggersWidget NÃO instalado — use "process events" ou as ferramentas fluig_process_*_xml.');
+  },
+};
+
+function falhar(mensagem) {
+  console.error(`fluig-cli: ${mensagem}`);
+  process.exitCode = 1;
+}
+
+async function main(argv) {
+  let pedido;
+  try {
+    pedido = lerArgs(argv);
+  } catch (err) {
+    falhar(err.message);
+    return;
+  }
+  const { grupo, acao, args, opcoes } = pedido;
+  if (!grupo || grupo === 'help' || argv.includes('--help') || argv.includes('-h')) {
     print(USAGE);
+    return;
+  }
+  // Ajuda e comando desconhecido saem ANTES do loadConfig: ele roda FLUIG_PASS_CMD, que abre o cofre (às
+  // vezes com prompt do keychain) só para o comando acabar num erro de digitação.
+  const chave = `${grupo} ${acao ?? ''}`.trim();
+  if (!Object.hasOwn(COMANDOS, chave)) {
+    falhar(`comando desconhecido: "${chave}".\n\n${USAGE}`);
     return;
   }
 
   let client;
   try {
-    client = new FluigClient(loadConfig());
+    client = new FluigClient(loadConfig(opcoes.env ?? 'teste'));
   } catch (err) {
-    console.error(`fluig-cli: ${err.message}`);
-    process.exit(1);
+    falhar(err.message);
+    return;
   }
+  await COMANDOS[chave](client, { args, opcoes, saida: OUT_DIR });
+}
 
-  switch (`${group} ${action ?? ''}`.trim()) {
-    case 'ping': {
-      print(await client.ping() ? 'OK - authenticated, session valid.' : 'FAILED.');
-      break;
-    }
-
-    case 'dataset list': {
-      const filter = (rest[0] || '').toLowerCase();
-      const all = await client.listDatasets();
-      const rows = all
-        .filter((d) => !filter || `${d.datasetId} ${d.datasetDescription || ''}`.toLowerCase().includes(filter))
-        .map((d) => `${(d.type || '').padEnd(8)} ${d.datasetId}`);
-      print(rows.join('\n'));
-      console.error(`\n(${rows.length} of ${all.length} datasets)`);
-      break;
-    }
-
-    case 'dataset get': {
-      const id = rest[0];
-      const ds = await client.getCustomDataset(id);
-      if (ds.datasetImpl !== undefined) {
-        await save(`datasets/${id}.js`, ds.datasetImpl);
-        print(ds.datasetImpl);
-      } else {
-        print(ds);
-      }
-      break;
-    }
-
-    case 'dataset run': {
-      const name = rest[0];
-      const limit = Number(flag(rest, '--limit') || 0);
-      const fields = (flag(rest, '--fields') || '').split(',').map((s) => s.trim()).filter(Boolean);
-      const { columns, values } = await client.runDataset(name, { fields });
-      await save(`datasets-run/${name}.json`, JSON.stringify({ columns, total: values.length, values }, null, 2));
-      print({ columns, total: values.length, sample: limit > 0 ? values.slice(0, limit) : values });
-      break;
-    }
-
-    case 'form list': {
-      const filter = (rest[0] || '').toLowerCase();
-      const forms = await client.listForms();
-      const rows = forms
-        .filter((f) => !filter || `${f.documentId} ${f.documentDescription || ''} ${f.datasetName || ''}`.toLowerCase().includes(filter))
-        .map((f) => `${String(f.documentId).padEnd(9)} v${f.version}  ${f.documentDescription}  [ds:${f.datasetName || '-'}]`);
-      print(rows.join('\n'));
-      console.error(`\n(${rows.length} of ${forms.length} forms)`);
-      break;
-    }
-
-    case 'form events': {
-      const documentId = Number(rest[0]);
-      const events = await client.getFormEvents(documentId);
-      for (const e of events) await save(`forms/${documentId}/events/${e.eventId}.js`, e.eventDescription || '');
-      print(events.map((e) => `${e.eventId} (${(e.eventDescription || '').length} chars)`).join('\n') || '(no events)');
-      break;
-    }
-
-    case 'form get': {
-      const documentId = Number(rest[0]);
-      const version = Number(rest[1] || 1000);
-      const names = await client.getFormFileNames(documentId);
-      for (const fileName of names) {
-        const b64 = await client.getFormFileBase64(documentId, version, fileName);
-        if (b64) await save(`forms/${documentId}/${fileName}`, Buffer.from(b64, 'base64').toString('utf8'));
-      }
-      const events = await client.getFormEvents(documentId);
-      for (const e of events) await save(`forms/${documentId}/events/${e.eventId}.js`, e.eventDescription || '');
-      print({ files: names, events: events.map((e) => e.eventId) });
-      break;
-    }
-
-    case 'globalevent list': {
-      const events = await client.listGlobalEvents();
-      print(Array.isArray(events) ? events.map((e) => e.globalEventPK?.eventId).join('\n') : events);
-      break;
-    }
-
-    case 'process versions': {
-      print(await client.listProcessVersions(rest[0]));
-      break;
-    }
-
-    case 'process events': {
-      const processId = rest[0];
-      const events = await client.getProcessEventsFromXml(processId, rest[1] ? Number(rest[1]) : undefined);
-      for (const e of events) await save(`processes/${processId}/events/${e.eventId}.js`, e.code || '');
-      print(events.map((e) => `${e.eventId} (${(e.code || '').length} chars)`).join('\n') || '(no events)');
-      break;
-    }
-
-    case 'process export': {
-      const processId = rest[0];
-      const xml = await client.exportProcessXml(processId, rest[1] ? Number(rest[1]) : undefined);
-      await save(`processes/${processId}.ecm30.xml`, xml);
-      console.error(`(${xml.length} bytes)`);
-      break;
-    }
-
-    case 'workflow check': {
-      print(await client.hasFluiggersWidget()
-        ? 'FluiggersWidget INSTALLED.'
-        : 'FluiggersWidget NOT installed - use "process events" / the fluig_process_*_xml tools instead.');
-      break;
-    }
-
-    default:
-      print(USAGE);
+// Roda só como programa; importado (pelos testes), apenas expõe as funções. realpath dos dois lados
+// porque, pelo atalho do npm (node_modules/.bin/fluig-cli), o argv[1] é um link para este arquivo.
+function chamadoDireto() {
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
   }
 }
 
-main().catch((err) => {
-  console.error('ERROR:', err?.message || err);
-  process.exit(1);
-});
+if (chamadoDireto()) {
+  main(process.argv.slice(2)).catch((err) => {
+    console.error(`fluig-cli: ${err?.message || err}`);
+    process.exit(1);
+  });
+}
