@@ -1,10 +1,14 @@
 {
   "name": "fluig-mcp",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Servidor MCP para o TOTVS Fluig — datasets, formulários, GED, eventos e processos BPM pela API, em homologação e produção, sem o Fluig Studio.",
   "type": "module",
   "license": "MIT",
   "author": "Rodrigo de Souza Faria (https://github.com/alucardigo)",
+  "contributors": [
+    "Antonio (https://github.com/antoniosdn)",
+    "Gian (https://github.com/kyso1)"
+  ],
   "homepage": "https://github.com/alucardigo/fluig-mcp#readme",
   "repository": {
     "type": "git",
@@ -29,13 +33,16 @@
     "soap",
     "headless"
   ],
-  "main": "./server.js",
+  "exports": {
+    "./package.json": "./package.json"
+  },
   "bin": {
-    "fluig-mcp": "./server.js",
-    "fluig-cli": "./bin/cli.js"
+    "fluig-mcp": "server.js",
+    "fluig-cli": "bin/cli.js"
   },
   "files": [
     "server.js",
+    "bin/",
     "src/",
     "docs/",
     ".env.example",
@@ -48,11 +55,14 @@
   "engines": {
     "node": ">=20"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "start": "node server.js",
     "list": "node server.js --list",
     "test": "node --test",
-    "check": "node --check server.js && node --check src/client.js && node --check src/config.js"
+    "check": "node --test test/sintaxe.test.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
