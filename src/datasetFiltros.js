@@ -105,3 +105,18 @@ export function consultaDataset({ fields = [], filters, match, constraints, serv
     order: order?.field ? [order.desc ? `${order.field};desc` : order.field] : [],
   };
 }
+
+/**
+ * Resposta do fluig_dataset_run. Com serverLimit, total é no máximo o teto: se o servidor devolveu o teto
+ * inteiro, limitadoPeloServidor avisa que pode haver mais linhas, para o agente não reportar o teto como
+ * contagem real (no 1.8, serverLimit 5 em colleague devolveu 5 das 2723 linhas).
+ */
+export function respostaDataset({ columns, values }, { serverLimit, limit = 0 } = {}) {
+  const teto = Number(serverLimit);
+  return {
+    columns,
+    total: values.length,
+    ...(teto >= 1 && values.length >= teto ? { limitadoPeloServidor: teto } : {}),
+    values: limit > 0 ? values.slice(0, limit) : values,
+  };
+}
