@@ -52,6 +52,13 @@ Validado contra um Fluig 1.7.1 de produção (pelos autores) e um Fluig 1.8 de h
 - **Chamadas simultâneas com `env` diferentes trocavam de servidor no meio**: depois do primeiro
   `await`, uma chamada de homologação podia continuar no cliente de produção.
 - `fluig_process_events_xml` corta por evento inteiro, em vez de devolver JSON partido.
+- `fluig_globalevent_save` não apaga mais os outros eventos globais quando a leitura da lista
+  falha (a rota grava a lista inteira e o código partia de uma lista vazia).
+- Upload para o GED e criação de formulário não reportam a página de login/SSO como sucesso.
+- `fluig_dataset_run` avisa (`limitadoPeloServidor`) quando o `serverLimit` cortou o resultado.
+- CLI (`fluig-cli`): `--env prod`; ajuda e comando desconhecido sem rodar o `FLUIG_PASS_CMD`;
+  arquivos gravados na pasta de saída, com nome vindo do servidor sem pasta; `form get` não
+  corrompe mais arquivo binário; `dataset run --limit` filtra no servidor.
 - A descrição de `env` dizia ao agente que produção era `fluig.exemplo.com.br`.
 - `npm run check` cobre todos os arquivos, inclusive a CLI.
 
@@ -63,9 +70,15 @@ Validado contra um Fluig 1.7.1 de produção (pelos autores) e um Fluig 1.8 de h
 - `resolveTenant` (`FLUIG_COMPANY=-1`) não manda mais a senha na URL
   ([#4](https://github.com/alucardigo/fluig-mcp/pull/4), @kyso1).
 - Pasta de saída sem escape por link simbólico, junction ou **link físico** (gravação por
-  temporário + `rename`), pasta 0700 e arquivos 0600.
+  temporário + `rename`), pasta 0700 e arquivos 0600. `FLUIG_SAIDA_DIR` aceita `~` e recusa
+  caminho relativo; no Windows, nome reservado ou terminado em ponto/espaço é recusado.
+- `FLUIG_PASS_CMD` usa só a primeira linha da saída, recusa saída fora de UTF-8 antes do login e
+  nunca mostra o stdout no erro.
 - Ferramentas de escrita recusam texto que saiu cortado de uma leitura.
-- Dependências atualizadas: as 12 vulnerabilidades do `npm audit` (1 crítica, 8 altas) zeradas.
+- Dependências: `@modelcontextprotocol/sdk` 1.32.1 e `undici` 6.29.1 corrigem 10 das 12
+  vulnerabilidades do `npm audit` (inclusive a crítica). As 2 restantes (`body-parser`,
+  `fast-uri`) vêm do transporte HTTP do SDK, que este servidor não carrega, e as correções têm menos
+  de uma semana — entram pelo Dependabot.
 - README, SECURITY e CONTRIBUTING não prometem mais `confirm` em toda escrita: 12 ferramentas
   operacionais ainda não o exigem, e a lista está no README.
 
