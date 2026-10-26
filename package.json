@@ -65,8 +65,8 @@
     "check": "node --test test/sintaxe.test.js"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "soap": "^1.9.3",
-    "undici": "^6.28.1"
+    "undici": "^6.29.1"
   }
 }
