@@ -33,12 +33,17 @@ cada uma na marra.
 
 ## Instalação
 
-Requer **Node.js 20+**. Sem clonar nada (o `--allow-git=root` é preciso no npm 12, que bloqueia pacotes
-vindos do git por padrão; ele libera só este pacote):
+Requer **Node.js 20+**. O pacote ainda não está no npm; sem clonar nada, direto do GitHub (o
+`--allow-git=root` é preciso no npm 12, que recusa pacote vindo do git por padrão; ele libera só este
+pacote, não as dependências):
 
 ```bash
 npx -y --allow-git=root github:alucardigo/fluig-mcp --list
 ```
+
+Sem versão fixada, o `npx` roda o que estiver na `main` a cada subida. Para atualizar só quando você
+decidir, fixe uma tag de release ou um commit: `github:alucardigo/fluig-mcp#v1.1.0` (ver
+[docs/clientes.md](docs/clientes.md#de-onde-vem-o-pacote)).
 
 Ou clonando, para ler o código antes:
 
@@ -62,8 +67,8 @@ servidor de outra pessoa.
 
 | Variável | Ambiente | Obrigatória |
 |---|---|---|
-| `FLUIG_HOST` · `FLUIG_USER` · `FLUIG_PASS` | homologação (`env: "teste"`) | para usar homologação |
-| `FLUIG_HOST_PROD` · `FLUIG_USER_PROD` · `FLUIG_PASS_PROD` | produção (`env: "prod"`) | para usar produção |
+| `FLUIG_HOST` · `FLUIG_USER` · `FLUIG_PASS` (ou `FLUIG_PASS_CMD`) | homologação (`env: "teste"`) | para usar homologação |
+| `FLUIG_HOST_PROD` · `FLUIG_USER_PROD` · `FLUIG_PASS_PROD` (ou `FLUIG_PASS_CMD_PROD`) | produção (`env: "prod"`) | para usar produção |
 | `FLUIG_PASS_CMD` · `FLUIG_PASS_CMD_PROD` | no lugar da senha: comando que a imprime (cofre do sistema) | não |
 | `FLUIG_USERCODE` · `FLUIG_USERCODE_PROD` | código do colaborador; sem ele, é descoberto pela sessão | não |
 | `FLUIG_SAIDA_DIR` | pasta onde o parâmetro `destino` grava (padrão `~/fluig-mcp-saida`; fora dela é recusado) | não |
@@ -74,18 +79,29 @@ Configure um dos pares, ou os dois. Veja [`.env.example`](.env.example) para as 
 
 ### Senha fora do arquivo de configuração
 
-`FLUIG_PASS_CMD` (e `FLUIG_PASS_CMD_PROD`) recebe um comando cuja saída é a senha. Ele roda sem shell,
-só quando o ambiente é usado, e falha **antes** de qualquer login se o comando falhar ou não imprimir
-nada. Exemplos:
+`FLUIG_PASS_CMD` (e `FLUIG_PASS_CMD_PROD`) recebe um comando que imprime a senha; vale só a **primeira
+linha** da saída, como no `pass`. Ele roda sem shell, só quando o ambiente é usado, e falha **antes** de
+qualquer login se o comando falhar, se a primeira linha vier vazia ou se a saída não for UTF-8. Aspas
+simples ou duplas agrupam um argumento; a barra invertida é literal e o fluig-mcp não expande `~` nem
+`$VAR` (use caminho absoluto, ou deixe o PowerShell expandir, como no exemplo do Windows). Exemplos
+para produção (para homologação, troque `fluig-prod` por `fluig-teste`):
 
-| Sistema | Guardar uma vez | `FLUIG_PASS_CMD` |
+| Sistema | Guardar uma vez | `FLUIG_PASS_CMD_PROD` |
 |---|---|---|
-| Linux (GNOME Keyring/KWallet) | `secret-tool store --label=fluig service fluig user seu.usuario` | `secret-tool lookup service fluig user seu.usuario` |
-| macOS (Keychain) | `security add-generic-password -s fluig -a seu.usuario -w` | `security find-generic-password -s fluig -w` |
-| [pass](https://www.passwordstore.org/) | `pass insert fluig` | `pass show fluig` |
+| Linux (GNOME Keyring/KWallet) | `secret-tool store --label=fluig-prod service fluig-prod user seu.usuario` | `secret-tool lookup service fluig-prod user seu.usuario` |
+| macOS (Keychain) | `security add-generic-password -s fluig-prod -a seu.usuario -w` | `security find-generic-password -s fluig-prod -w` |
+| [pass](https://www.passwordstore.org/) | `pass insert fluig-prod` | `pass show fluig-prod` |
 | 1Password CLI | (no app) | `op read op://Pessoal/Fluig/password` |
+| Windows (PowerShell) | `Get-Credential seu.usuario \| Export-Clixml $env:USERPROFILE/.fluig-prod.xml` | `powershell.exe -NoProfile -NonInteractive -Command '[Console]::OutputEncoding = [Text.Encoding]::UTF8; [Console]::Out.Write((Import-Clixml $env:USERPROFILE/.fluig-prod.xml).GetNetworkCredential().Password)'` |
 
-No GitHub Copilot (VS Code) não precisa disso: o próprio VS Code pede a senha e a guarda (abaixo).
+No Windows, `.cmd`/`.bat` não rodam sem shell; o porquê e as alternativas estão em
+[docs/clientes.md](docs/clientes.md#windows).
+
+O comando roda uma vez por processo, na primeira chamada daquele ambiente, que espera o cofre (até 15 s;
+se ele pedir desbloqueio, é a hora). Trocou a senha no cofre? Reinicie o cliente MCP.
+
+No GitHub Copilot (VS Code) não precisa disso: o próprio VS Code pede a senha e a guarda (exemplo em
+[docs/clientes.md](docs/clientes.md#github-copilot-vs-code)).
 
 Configuração de cada cliente (Claude Code, Codex, GitHub Copilot, Cursor, Claude Desktop):
 [docs/clientes.md](docs/clientes.md).
@@ -103,10 +119,10 @@ Claude Code / Claude Desktop (`~/.claude.json` ou `claude_desktop_config.json`):
       "env": {
         "FLUIG_HOST": "http://fluig-homolog.suaempresa.com.br:8080",
         "FLUIG_USER": "seu.usuario",
-        "FLUIG_PASS": "sua-senha",
+        "FLUIG_PASS_CMD": "secret-tool lookup service fluig-teste user seu.usuario",
         "FLUIG_HOST_PROD": "https://fluig.suaempresa.com.br:8443",
         "FLUIG_USER_PROD": "seu.usuario",
-        "FLUIG_PASS_PROD": "sua-senha-de-producao"
+        "FLUIG_PASS_CMD_PROD": "secret-tool lookup service fluig-prod user seu.usuario"
       }
     }
   }
