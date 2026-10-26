@@ -5,7 +5,8 @@ import net from 'node:net';
 // mas instâncias DIFERENTES: passar um Agent do pacote para o fetch global dá
 // UND_ERR_INVALID_ARG, porque o dispatcher precisa ser da mesma cópia da undici.
 import { Agent, fetch } from 'undici';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
+import { conferirDestino, gravarNaSaida } from './saida.js';
 
 /**
  * Cliente da API do TOTVS Fluig — headless (sem IDE). Replica o protocolo da
@@ -679,13 +680,10 @@ export class FluigClient {
     const dto = { globalEventPK: { companyId: this.companyId, eventId }, eventDescription: code };
     const idx = arr.findIndex(e => e.globalEventPK && e.globalEventPK.eventId === eventId);
     if (idx === -1) arr.push(dto); else arr[idx] = dto;
-    const cookie = await this.login();
-    const r = await this._fetch('/ecm/api/rest/ecm/globalevent/saveEventList', {
-      method: 'POST',
-      headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded', Cookie: cookie },
-      body: JSON.stringify(arr),
+    // Pelo _rest, para recuperar a sessão: sem ela esta rota antiga devolve 500 com UT010031.
+    return this._rest('/ecm/api/rest/ecm/globalevent/saveEventList', {
+      method: 'POST', form: true, body: JSON.stringify(arr),
     });
-    return r.json();
   }
 
   // ---------- Workflow (eventos de processo — requer FluiggersWidget) ----------
@@ -1543,26 +1541,49 @@ export class FluigClient {
 
   /** Baixa conteúdo BINÁRIO autenticado (anexo, stream do GED, diagrama). */
   async _restBinary(path, { accept } = {}) {
-    const cookie = await this.login();
-    const headers = { Cookie: cookie };
+    const headers = { Cookie: await this.login() };
     if (accept) headers.Accept = accept;
-    const r = await this._fetch(path, { method: 'GET', headers });
-    const buf = Buffer.from(await r.arrayBuffer());
-    return {
-      status: r.status, buffer: buf,
-      contentType: r.headers.get('content-type') || '',
-      contentDisposition: r.headers.get('content-disposition') || '',
-    };
+    for (let tentativa = 0; ; tentativa++) {
+      const r = await this._fetch(path, { method: 'GET', headers });
+      const buffer = Buffer.from(await r.arrayBuffer());
+      const contentType = r.headers.get('content-type') || '';
+      // Mesma regra do _rest(): sessão expirada → novo login e UMA repetição. Sem isso, a página de
+      // SSO seria gravada como se fosse o anexo. Só um erro ou uma página HTML é lido como texto.
+      if (tentativa === 0 && this._binarioDeSessaoExpirada(r.status, buffer, contentType)) {
+        this._descartarSessao(headers.Cookie);
+        headers.Cookie = await this.login();
+        continue;
+      }
+      return { status: r.status, buffer, contentType, contentDisposition: r.headers.get('content-disposition') || '' };
+    }
   }
 
-  /** Salva um binário baixado e devolve um resumo (nunca o conteúdo — estouraria o contexto). */
+  _binarioDeSessaoExpirada(status, buffer, contentType) {
+    if (status < 400 && !/text\/html/i.test(contentType)) return false;
+    return sessaoExpirada(status, buffer.toString('utf8', 0, 64 * 1024), contentType);
+  }
+
+  /** Confere o destino só pelo caminho, ANTES de baixar: recusar depois desperdiçaria o download. */
+  _conferirDestino(destino) {
+    conferirDestino(destino, this.saidaDir ? { base: this.saidaDir } : undefined);
+  }
+
+  /**
+   * Salva um binário baixado e devolve um resumo (nunca o conteúdo — estouraria o contexto).
+   * O destino fica preso à pasta de saída (FLUIG_SAIDA_DIR): o conteúdo é de quem subiu o anexo ou o
+   * documento, e o caminho vem do agente — ver src/saida.js.
+   */
   _salvar(destino, bin, contexto) {
     if (bin.status < 200 || bin.status >= 300) {
       throw new Error(`${contexto}: HTTP ${bin.status} — ${bin.buffer.toString('utf8').slice(0, 300)}`);
     }
-    writeFileSync(destino, bin.buffer);
+    if (this._binarioDeSessaoExpirada(bin.status, bin.buffer, bin.contentType)) {
+      throw new Error(`${contexto}: o servidor devolveu a página de login/SSO em vez do arquivo, mesmo depois de `
+        + 'um novo login. Nada foi gravado. Rode fluig_session_reset e tente de novo.');
+    }
+    const arquivo = gravarNaSaida(destino, bin.buffer, this.saidaDir ? { base: this.saidaDir } : undefined);
     return {
-      arquivo: destino, bytes: bin.buffer.length,
+      arquivo, bytes: bin.buffer.length,
       contentType: bin.contentType, contentDisposition: bin.contentDisposition,
     };
   }
@@ -1612,6 +1633,7 @@ export class FluigClient {
   async processDiagramGet(processId, processVersion, destino) {
     const p = `/process-management/api/v2/processes/${encodeURIComponent(processId)}`
       + `/process-versions/${encodeURIComponent(processVersion)}/diagram`;
+    if (destino) this._conferirDestino(destino);
     const bin = await this._restBinary(p, { accept: 'application/svg+xml' });
     if (destino) return this._salvar(destino, bin, 'processDiagramGet');
     if (bin.status < 200 || bin.status >= 300) throw new Error(`processDiagramGet: HTTP ${bin.status}`);
@@ -1627,6 +1649,7 @@ export class FluigClient {
   async attachmentDownload(processInstanceId, attachmentSequence, destino) {
     const p = `/process-management/api/v2/requests/${encodeURIComponent(processInstanceId)}`
       + `/attachments/${encodeURIComponent(attachmentSequence)}/download`;
+    this._conferirDestino(destino);
     return this._salvar(destino, await this._restBinary(p), 'attachmentDownload');
   }
 
@@ -1720,6 +1743,7 @@ export class FluigClient {
    *    termina no mesmo helper dos thumbnails. Use Content-Disposition e a extensão do nome.
    */
   async gedDownload(documentId, destino) {
+    this._conferirDestino(destino);
     const meta = await this._rest(`/content-management/api/v2/documents/${encodeURIComponent(documentId)}`);
     const bin = await this._restBinary(`/content-management/api/v2/documents/${encodeURIComponent(documentId)}/stream`);
     const salvo = this._salvar(destino, bin, 'gedDownload');
@@ -1854,6 +1878,7 @@ export class FluigClient {
     const qs = this._qs({ anonymizeForms });
     const base = `/process-management/api/v2/workflow-exporter/${encodeURIComponent(processInstanceId)}`;
     if (destino) {
+      this._conferirDestino(destino);
       return this._salvar(destino, await this._restBinary(`${base}/download${qs}`, { accept: 'application/zip' }), 'workflowExporter');
     }
     const r = await this._restRaw(`${base}${qs}`, { accept: 'text/plain' });

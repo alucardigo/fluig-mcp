@@ -16,7 +16,7 @@ import { loadConfig, ambientesConfigurados } from './src/config.js';
 import { FluigClient } from './src/client.js';
 import { resumoFormularios } from './src/formularios.js';
 import { consultaDataset, OPERADORES } from './src/datasetFiltros.js';
-import { entregarTexto } from './src/saida.js';
+import { entregarTexto, recusarCortado } from './src/saida.js';
 import { client, comCliente } from './src/despacho.js';
 import { readFileSync } from 'node:fs';
 
@@ -37,9 +37,13 @@ function clienteDe(env) {
 const S = (props = {}, required = []) => ({ type: 'object', properties: props, required });
 const str = (description) => ({ type: 'string', description });
 const num = (description) => ({ type: 'number', description });
-// Parâmetros comuns das ferramentas que devolvem texto grande (ver src/saida.js).
+// Todo `destino` fica preso à pasta de saída (ver src/saida.js): o conteúdo vem do servidor e o
+// caminho vem do agente.
+const destinoNaSaida = (oQue) => str(`${oQue}, dentro de FLUIG_SAIDA_DIR (padrão: ~/fluig-mcp-saida); `
+  + 'caminho relativo é relativo a ela, e caminho fora dela é recusado');
+// Parâmetros comuns das ferramentas que devolvem texto grande.
 const SAIDA = {
-  destino: str('arquivo para gravar o conteúdo inteiro, dentro de FLUIG_SAIDA_DIR (padrão: ~/fluig-mcp-saida); a resposta traz só o resumo (opcional)'),
+  destino: destinoNaSaida('arquivo para gravar o conteúdo inteiro (opcional; a resposta traz só o resumo)'),
   maxChars: num('máximo de caracteres na resposta inline (opcional; padrão 20000)'),
 };
 
@@ -69,7 +73,10 @@ const TOOLS = [
     inputSchema: S({ datasetId: str('id do dataset custom'), ...SAIDA }, ['datasetId']),
     handler: async ({ datasetId, destino, maxChars }) => {
       const ds = await client.getCustomDataset(datasetId);
-      return ds.datasetImpl !== undefined ? entregarTexto(ds.datasetImpl, { destino, maxChars }) : ds;
+      if (ds.datasetImpl !== undefined) return entregarTexto(ds.datasetImpl, { destino, maxChars });
+      // Resposta que não é JSON (página de erro, de login) não passa pelo corte nem vai para arquivo.
+      if (ds._raw !== undefined) throw new Error(`loadDataset(${datasetId}) HTTP ${ds._status}: ${String(ds._raw).slice(0, 300)}`);
+      return ds;
     },
   },
   {
@@ -854,7 +861,7 @@ const TOOLS = [
     inputSchema: S({
       processId: str('id do processo'),
       processVersion: num('versão'),
-      destino: str('caminho do arquivo .svg a gravar (opcional)'),
+      destino: destinoNaSaida('arquivo .svg a gravar (opcional)'),
     }, ['processId', 'processVersion']),
     handler: async ({ processId, processVersion, destino }) => client.processDiagramGet(processId, processVersion, destino),
   },
@@ -866,7 +873,7 @@ const TOOLS = [
     inputSchema: S({
       processInstanceId: num('id da solicitação'),
       attachmentSequence: num('sequência do anexo (ver fluig_process_attachments)'),
-      destino: str('caminho do arquivo a gravar'),
+      destino: destinoNaSaida('arquivo a gravar'),
     }, ['processInstanceId', 'attachmentSequence', 'destino']),
     handler: async ({ processInstanceId, attachmentSequence, destino }) =>
       client.attachmentDownload(processInstanceId, attachmentSequence, destino),
@@ -922,7 +929,7 @@ const TOOLS = [
       + '— confie no Content-Disposition e na extensão.',
     inputSchema: S({
       documentId: str('id do documento'),
-      destino: str('caminho do arquivo a gravar'),
+      destino: destinoNaSaida('arquivo a gravar'),
     }, ['documentId', 'destino']),
     handler: async ({ documentId, destino }) => client.gedDownload(documentId, destino),
   },
@@ -1011,7 +1018,7 @@ const TOOLS = [
     inputSchema: S({
       processInstanceId: num('id da solicitação'),
       anonymizeForms: { type: 'boolean', description: 'true anonimiza os formulários; escolha explícita' },
-      destino: str('caminho do .zip a gravar (opcional; sem isso devolve o dossiê em texto)'),
+      destino: destinoNaSaida('arquivo .zip a gravar (opcional; sem isso devolve o dossiê em texto)'),
     }, ['processInstanceId', 'anonymizeForms']),
     handler: async ({ processInstanceId, ...r }) => client.workflowExporter(processInstanceId, r),
   },
@@ -1253,6 +1260,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   let alvo;
   try {
     alvo = clienteDe(args.env);
+    // Texto que saiu cortado de uma leitura (ver src/saida.js) não volta para o Fluig.
+    if (tool.write) recusarCortado(args, '');
   } catch (e) {
     return { content: [{ type: 'text', text: 'ERRO: ' + (e?.message || e) }], isError: true };
   }
