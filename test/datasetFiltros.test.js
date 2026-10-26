@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildConstraints, consultaDataset } from '../src/datasetFiltros.js';
+import { buildConstraints, consultaDataset, respostaDataset } from '../src/datasetFiltros.js';
 
 const c = (fieldName, initialValue, finalValue, contraintType = 'MUST', likeSearch = false) => (
   { fieldName, initialValue, finalValue, contraintType, likeSearch }
@@ -137,4 +137,16 @@ test('serverLimit inteiro >= 1; fração, zero ou fora do int do servidor é err
 
 test('env e limit não entram na consulta ao servidor', () => {
   assert.deepEqual(consultaDataset({ env: 'teste', limit: 3, name: 'colleague' }), { fields: [], constraints: [], order: [] });
+});
+
+test('resposta: com serverLimit atingido, limitadoPeloServidor avisa que total é o teto', () => {
+  const linhas = (n) => ({ columns: ['id'], values: Array.from({ length: n }, (_, i) => ({ id: String(i) })) });
+  assert.deepEqual(respostaDataset(linhas(3), { serverLimit: 3 }), {
+    columns: ['id'], total: 3, limitadoPeloServidor: 3, values: linhas(3).values,
+  });
+  // Menos linhas que o teto: o servidor devolveu tudo, total é a contagem real.
+  assert.equal('limitadoPeloServidor' in respostaDataset(linhas(2), { serverLimit: 3 }), false);
+  assert.equal('limitadoPeloServidor' in respostaDataset(linhas(5), {}), false);
+  // limit corta só a exibição; total continua sendo o que o servidor devolveu.
+  assert.deepEqual(respostaDataset(linhas(5), { limit: 2 }), { columns: ['id'], total: 5, values: linhas(2).values });
 });
