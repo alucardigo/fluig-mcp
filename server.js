@@ -14,6 +14,10 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { loadConfig, ambientesConfigurados } from './src/config.js';
 import { FluigClient } from './src/client.js';
+import { resumoFormularios } from './src/formularios.js';
+import { consultaDataset, respostaDataset, OPERADORES, TIPOS, MAX_SERVER_LIMIT } from './src/datasetFiltros.js';
+import { entregarTexto, MAX_CHARS_PADRAO, recusarCortado } from './src/saida.js';
+import { client, comCliente } from './src/despacho.js';
 import { readFileSync } from 'node:fs';
 
 const VERSAO = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version;
@@ -21,18 +25,27 @@ const VERSAO = JSON.parse(readFileSync(new URL('./package.json', import.meta.url
 // Um FluigClient por ambiente, criado SOB DEMANDA. Preguiçoso de propósito: `--list` e `--help`
 // precisam rodar sem nenhuma credencial, para que qualquer pessoa possa auditar o que este
 // servidor faz ANTES de entregar uma senha a ele. Instanciar no topo quebraria isso.
-// `client` é o alvo ATIVO da chamada em curso — o dispatcher troca a referência conforme o
-// `env` recebido, então todo handler que usa `client.xxx(...)` funciona sem alteração.
+// `client` (src/despacho.js) é o cliente da chamada EM CURSO: cada chamada roda no seu próprio
+// contexto, então todo handler que usa `client.xxx(...)` funciona sem alteração — e duas chamadas
+// simultâneas com env diferentes não trocam de servidor no meio.
 const clientsByEnv = {};
 function clienteDe(env) {
   if (!clientsByEnv[env]) clientsByEnv[env] = new FluigClient(loadConfig(env));
   return clientsByEnv[env];
 }
-let client = null;
 
 const S = (props = {}, required = []) => ({ type: 'object', properties: props, required });
 const str = (description) => ({ type: 'string', description });
 const num = (description) => ({ type: 'number', description });
+// Todo `destino` fica preso à pasta de saída (ver src/saida.js): o conteúdo vem do servidor e o
+// caminho vem do agente.
+const destinoNaSaida = (oQue) => str(`${oQue}, dentro de FLUIG_SAIDA_DIR (padrão: ~/fluig-mcp-saida); `
+  + 'caminho relativo é relativo a ela, e caminho fora dela é recusado');
+// Parâmetros comuns das ferramentas que devolvem texto grande.
+const SAIDA = {
+  destino: destinoNaSaida('arquivo para gravar o conteúdo inteiro (opcional; a resposta traz só o resumo)'),
+  maxChars: num('máximo de caracteres na resposta inline (opcional; padrão 20000)'),
+};
 
 const TOOLS = [
   {
@@ -57,24 +70,77 @@ const TOOLS = [
   {
     name: 'fluig_dataset_get',
     description: 'Retorna o código-fonte de um dataset CUSTOM (loadDataset).',
-    inputSchema: S({ datasetId: str('id do dataset custom') }, ['datasetId']),
-    handler: async ({ datasetId }) => {
+    inputSchema: S({ datasetId: str('id do dataset custom'), ...SAIDA }, ['datasetId']),
+    handler: async ({ datasetId, destino, maxChars }) => {
       const ds = await client.getCustomDataset(datasetId);
-      return ds.datasetImpl !== undefined ? ds.datasetImpl : ds;
+      if (ds.datasetImpl !== undefined) return entregarTexto(ds.datasetImpl, { destino, maxChars });
+      // Resposta que não é JSON (página de erro, de login) não passa pelo corte nem vai para arquivo.
+      if (ds._raw !== undefined) throw new Error(`loadDataset(${datasetId}) HTTP ${ds._status}: ${String(ds._raw).slice(0, 300)}`);
+      return ds;
     },
   },
   {
     name: 'fluig_dataset_run',
-    description: 'Executa um dataset (form ou custom) e retorna as linhas. fields e limit opcionais.',
+    description: 'Executa um dataset (form ou custom) e retorna as linhas. Filtre no SERVIDOR com filters '
+      + '(campo + condição: eq, ne, contains, starts, ends, between) e serverLimit (sqlLimit) em vez de trazer '
+      + 'tudo e cortar com limit. match any = OU só entre as condições positivas: ne continua excluindo (E) '
+      + 'mesmo com any. Em dataset CUSTOM, filters/constraints/serverLimit/order só valem se o código do dataset '
+      + 'tratar constraints e sortFields; confira o resultado. Se vier limitadoPeloServidor, total é o teto do '
+      + 'serverLimit e pode haver mais linhas. constraints aceita constraints cruas do getDataset.',
     inputSchema: S({
       name: str('nome do dataset'),
       fields: { type: 'array', items: { type: 'string' }, description: 'colunas a retornar (opcional)' },
-      limit: num('máximo de linhas a exibir (opcional)'),
+      filters: {
+        type: 'array',
+        description: 'filtros (opcional): [{ field, op, value, valueTo }]. value é obrigatório; para campo vazio '
+          + 'ou nulo use eq (ou ne) com value "". contains/starts/ends recusam value vazio, e % e _ no value '
+          + 'funcionam como curinga. between exige valueTo e, em dataset de formulário, compara como TEXTO: '
+          + 'use datas AAAA-MM-DD (dd/mm/aaaa e números saem fora de ordem).',
+        items: {
+          type: 'object',
+          properties: {
+            field: { type: 'string' },
+            op: { type: 'string', enum: OPERADORES },
+            value: { type: 'string' },
+            valueTo: { type: 'string', description: 'obrigatório em between' },
+          },
+          required: ['field', 'op', 'value'],
+        },
+      },
+      match: {
+        type: 'string', enum: ['all', 'any'],
+        description: 'all = todos os filtros (padrão); any = qualquer uma das condições positivas (ne continua excluindo)',
+      },
+      constraints: {
+        type: 'array',
+        description: 'constraints cruas do getDataset (opcional): [{ field, initial, final, type, like }]; aceita '
+          + 'também os nomes do WSDL (fieldName, initialValue, finalValue, contraintType, likeSearch). '
+          + 'type ausente = MUST; final ausente = initial.',
+        items: {
+          type: 'object',
+          properties: {
+            field: { type: 'string' },
+            initial: { type: 'string' },
+            final: { type: 'string' },
+            type: { type: 'string', enum: TIPOS },
+            like: { type: 'boolean' },
+          },
+        },
+      },
+      serverLimit: {
+        type: 'integer', minimum: 1, maximum: MAX_SERVER_LIMIT,
+        description: 'máximo de linhas que o SERVIDOR devolve (vira a constraint sqlLimit; opcional)',
+      },
+      order: {
+        type: 'object',
+        description: 'ordem (opcional): { field, desc }',
+        properties: { field: { type: 'string' }, desc: { type: 'boolean' } },
+      },
+      limit: num('máximo de linhas a exibir depois de buscar (opcional)'),
     }, ['name']),
-    handler: async ({ name, fields = [], limit = 0 }) => {
-      const { columns, values } = await client.runDataset(name, { fields });
-      return { columns, total: values.length, values: limit > 0 ? values.slice(0, limit) : values };
-    },
+    handler: async ({ name, limit = 0, ...args }) => respostaDataset(
+      await client.runDataset(name, consultaDataset(args)), { serverLimit: args.serverLimit, limit },
+    ),
   },
   {
     name: 'fluig_dataset_save',
@@ -90,13 +156,7 @@ const TOOLS = [
     name: 'fluig_form_list',
     description: 'Lista formulários (documentId, versão, descrição, dataset). Filtro opcional.',
     inputSchema: S({ filtro: str('substring para filtrar (opcional)') }),
-    handler: async ({ filtro }) => {
-      const forms = await client.listForms();
-      const f = (filtro || '').toLowerCase();
-      return forms
-        .filter(x => !f || `${x.documentId} ${x.documentDescription || ''} ${x.datasetName || ''}`.toLowerCase().includes(f))
-        .map(x => ({ documentId: x.documentId, version: x.version, description: x.documentDescription, dataset: x.datasetName }));
-    },
+    handler: async ({ filtro }) => resumoFormularios(await client.listForms(), filtro, client.userCode, client._varUserCode),
   },
   {
     name: 'fluig_form_events',
@@ -417,8 +477,10 @@ const TOOLS = [
     inputSchema: S({
       processId: str('id do processo (ex: Suporte_TI)'),
       version: num('versão específica (opcional; padrão = versão corrente)'),
+      ...SAIDA,
     }, ['processId']),
-    handler: async ({ processId, version }) => client.exportProcessXml(processId, version),
+    handler: async ({ processId, version, destino, maxChars }) =>
+      entregarTexto(await client.exportProcessXml(processId, version), { destino, maxChars }),
   },
   {
     name: 'fluig_process_events_xml',
@@ -426,10 +488,29 @@ const TOOLS = [
     inputSchema: S({
       processId: str('id do processo'),
       version: num('versão específica (opcional)'),
+      ...SAIDA,
     }, ['processId']),
-    handler: async ({ processId, version }) => {
+    handler: async ({ processId, version, destino, maxChars }) => {
       const evs = await client.getProcessEventsFromXml(processId, version);
-      return { processId, total: evs.length, eventos: evs };
+      const tudo = JSON.stringify({ processId, total: evs.length, eventos: evs }, null, 2);
+      if (destino) return entregarTexto(tudo, { destino });
+      // Corta por EVENTO inteiro: cortar a string no meio deixaria um JSON inválido e um evento pela
+      // metade, que o agente leria como se terminasse ali.
+      const limite = Math.floor(Number(maxChars)) > 0 ? Math.floor(Number(maxChars)) : MAX_CHARS_PADRAO;
+      if (tudo.length <= limite) return tudo;
+      const cabem = [];
+      let tamanho = 0;
+      for (const ev of evs) {
+        tamanho += JSON.stringify(ev, null, 2).length;
+        if (tamanho > limite) break;
+        cabem.push(ev);
+      }
+      return {
+        processId, total: evs.length, eventos: cabem,
+        omitidos: evs.slice(cabem.length).map((ev) => ev.eventId ?? ev.name ?? '?'),
+        aviso: `Só ${cabem.length} de ${evs.length} eventos cabem em ${limite} caracteres. `
+          + 'Informe destino para gravar todos em arquivo, ou aumente maxChars.',
+      };
     },
   },
   {
@@ -820,7 +901,7 @@ const TOOLS = [
     inputSchema: S({
       processId: str('id do processo'),
       processVersion: num('versão'),
-      destino: str('caminho do arquivo .svg a gravar (opcional)'),
+      destino: destinoNaSaida('arquivo .svg a gravar (opcional)'),
     }, ['processId', 'processVersion']),
     handler: async ({ processId, processVersion, destino }) => client.processDiagramGet(processId, processVersion, destino),
   },
@@ -832,7 +913,7 @@ const TOOLS = [
     inputSchema: S({
       processInstanceId: num('id da solicitação'),
       attachmentSequence: num('sequência do anexo (ver fluig_process_attachments)'),
-      destino: str('caminho do arquivo a gravar'),
+      destino: destinoNaSaida('arquivo a gravar'),
     }, ['processInstanceId', 'attachmentSequence', 'destino']),
     handler: async ({ processInstanceId, attachmentSequence, destino }) =>
       client.attachmentDownload(processInstanceId, attachmentSequence, destino),
@@ -888,7 +969,7 @@ const TOOLS = [
       + '— confie no Content-Disposition e na extensão.',
     inputSchema: S({
       documentId: str('id do documento'),
-      destino: str('caminho do arquivo a gravar'),
+      destino: destinoNaSaida('arquivo a gravar'),
     }, ['documentId', 'destino']),
     handler: async ({ documentId, destino }) => client.gedDownload(documentId, destino),
   },
@@ -977,7 +1058,7 @@ const TOOLS = [
     inputSchema: S({
       processInstanceId: num('id da solicitação'),
       anonymizeForms: { type: 'boolean', description: 'true anonimiza os formulários; escolha explícita' },
-      destino: str('caminho do .zip a gravar (opcional; sem isso devolve o dossiê em texto)'),
+      destino: destinoNaSaida('arquivo .zip a gravar (opcional; sem isso devolve o dossiê em texto)'),
     }, ['processInstanceId', 'anonymizeForms']),
     handler: async ({ processInstanceId, ...r }) => client.workflowExporter(processInstanceId, r),
   },
@@ -1106,8 +1187,8 @@ for (const t of TOOLS) {
   t.inputSchema.properties = t.inputSchema.properties || {};
   t.inputSchema.properties.env = {
     type: 'string', enum: ['teste', 'prod'],
-    description: 'OBRIGATÓRIO. Ambiente alvo: "teste" (o servidor de homologação — homologação) ou "prod" '
-      + '(fluig.exemplo.com.br — PRODUÇÃO REAL). Não há default: a escolha é sempre explícita, '
+    description: 'OBRIGATÓRIO. Ambiente alvo: "teste" (homologação, o host de FLUIG_HOST) ou "prod" '
+      + '(PRODUÇÃO REAL, o host de FLUIG_HOST_PROD). Não há default: a escolha é sempre explícita, '
       + 'para que ninguém leia homologação achando que é produção nem escreva em produção achando '
       + 'que é teste.',
   };
@@ -1151,10 +1232,12 @@ Uso:
   fluig-mcp --help      Mostra esta mensagem.
 
 Ambiente (nenhum tem default — veja .env.example):
-  Homologação:  FLUIG_HOST       FLUIG_USER       FLUIG_PASS
-  Produção:     FLUIG_HOST_PROD  FLUIG_USER_PROD  FLUIG_PASS_PROD
+  Homologação:  FLUIG_HOST       FLUIG_USER       FLUIG_PASS       (ou FLUIG_PASS_CMD)
+  Produção:     FLUIG_HOST_PROD  FLUIG_USER_PROD  FLUIG_PASS_PROD  (ou FLUIG_PASS_CMD_PROD)
 
+  FLUIG_PASS_CMD    comando que imprime a senha (cofre do sistema); vale a primeira linha.
   FLUIG_READONLY=1  expõe SOMENTE as ferramentas que não alteram o servidor.
+  FLUIG_SAIDA_DIR   pasta onde o parâmetro destino grava (padrão: ~/fluig-mcp-saida).
 
 Toda chamada exige o parâmetro env ("teste" ou "prod"). Não há default: é o que impede
 ler homologação achando que é produção — e escrever em produção achando que é teste.`;
@@ -1182,7 +1265,8 @@ const configurados = ambientesConfigurados();
 if (!configurados.length) {
   console.error(
     'fluig-mcp: nenhum ambiente configurado. Defina FLUIG_HOST/FLUIG_USER/FLUIG_PASS '
-    + '(homologação) e/ou FLUIG_HOST_PROD/FLUIG_USER_PROD/FLUIG_PASS_PROD (produção). '
+    + '(homologação) e/ou FLUIG_HOST_PROD/FLUIG_USER_PROD/FLUIG_PASS_PROD (produção); no lugar '
+    + 'da senha, FLUIG_PASS_CMD/FLUIG_PASS_CMD_PROD lê de um comando (cofre do sistema). '
     + 'Veja .env.example. Rode --list para inspecionar as ferramentas sem credencial.',
   );
   process.exit(1);
@@ -1212,17 +1296,20 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       content: [{ type: 'text', text:
         `ERRO: a ferramenta ${req.params.name} exige o parâmetro env="teste" ou env="prod". `
         + 'Não existe default — informe o ambiente explicitamente. '
-        + 'teste = o servidor de homologação (homologação) · prod = fluig.exemplo.com.br (PRODUÇÃO REAL).' }],
+        + 'teste = homologação (FLUIG_HOST) · prod = PRODUÇÃO REAL (FLUIG_HOST_PROD).' }],
       isError: true,
     };
   }
+  let alvo;
   try {
-    client = clienteDe(args.env);
+    alvo = clienteDe(args.env);
+    // Texto que saiu cortado de uma leitura (ver src/saida.js) não volta para o Fluig.
+    if (tool.write) recusarCortado(args, '');
   } catch (e) {
     return { content: [{ type: 'text', text: 'ERRO: ' + (e?.message || e) }], isError: true };
   }
   try {
-    const out = await tool.handler(args);
+    const out = await comCliente(alvo, () => tool.handler(args));
     return { content: [{ type: 'text', text: typeof out === 'string' ? out : JSON.stringify(out, null, 2) }] };
   } catch (e) {
     return { content: [{ type: 'text', text: 'ERRO: ' + (e?.message || e) }], isError: true };

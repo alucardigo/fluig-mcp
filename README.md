@@ -33,19 +33,28 @@ cada uma na marra.
 
 ## Instalação
 
-Requer **Node.js 20+**.
+Requer **Node.js 20+**. O pacote ainda não está no npm; sem clonar nada, direto do GitHub (o
+`--allow-git=root` é preciso no npm 12, que recusa pacote vindo do git por padrão; ele libera só este
+pacote, não as dependências):
+
+```bash
+npx -y --allow-git=root github:alucardigo/fluig-mcp --list
+```
+
+Sem versão fixada, o `npx` roda o que estiver na `main` a cada subida. Para atualizar só quando você
+decidir, fixe uma tag de release ou um commit: `github:alucardigo/fluig-mcp#v1.1.0` (ver
+[docs/clientes.md](docs/clientes.md#de-onde-vem-o-pacote)).
+
+Ou clonando, para ler o código antes:
 
 ```bash
 git clone https://github.com/alucardigo/fluig-mcp.git
 cd fluig-mcp
 npm install
-```
-
-Inspecione o que ele faz **antes** de dar credencial a ele:
-
-```bash
 node server.js --list
 ```
+
+Inspecione o que ele faz **antes** de dar credencial a ele: o `--list` acima já faz isso.
 
 `--list` não carrega configuração nenhuma, de propósito: você consegue auditar a superfície
 inteira antes de confiar uma senha ao processo.
@@ -58,12 +67,48 @@ servidor de outra pessoa.
 
 | Variável | Ambiente | Obrigatória |
 |---|---|---|
-| `FLUIG_HOST` · `FLUIG_USER` · `FLUIG_PASS` | homologação (`env: "teste"`) | para usar homologação |
-| `FLUIG_HOST_PROD` · `FLUIG_USER_PROD` · `FLUIG_PASS_PROD` | produção (`env: "prod"`) | para usar produção |
+| `FLUIG_HOST` · `FLUIG_USER` · `FLUIG_PASS` (ou `FLUIG_PASS_CMD`) | homologação (`env: "teste"`) | para usar homologação |
+| `FLUIG_HOST_PROD` · `FLUIG_USER_PROD` · `FLUIG_PASS_PROD` (ou `FLUIG_PASS_CMD_PROD`) | produção (`env: "prod"`) | para usar produção |
+| `FLUIG_PASS_CMD` · `FLUIG_PASS_CMD_PROD` | no lugar da senha: comando que a imprime (cofre do sistema) | não |
+| `FLUIG_USERCODE` · `FLUIG_USERCODE_PROD` | código do colaborador; sem ele, é descoberto pela sessão | não |
+| `FLUIG_SAIDA_DIR` | pasta onde o parâmetro `destino` grava (padrão `~/fluig-mcp-saida`; fora dela é recusado) | não |
 | `FLUIG_READONLY=1` | ambos | não — mas leia [Segurança](#segurança) |
 
 Configure um dos pares, ou os dois. Veja [`.env.example`](.env.example) para as opcionais
 (tenant, datasources JNDI, IPs semente, prefixo dos datasets descartáveis).
+
+### Senha fora do arquivo de configuração
+
+`FLUIG_PASS_CMD` (e `FLUIG_PASS_CMD_PROD`) recebe um comando que imprime a senha; vale só a **primeira
+linha** da saída, como no `pass`. Ele roda sem shell, só quando o ambiente é usado, e falha **antes** de
+qualquer login se o comando falhar, se a primeira linha vier vazia ou se a saída não for UTF-8. Aspas
+simples ou duplas agrupam um argumento; a barra invertida é literal e o fluig-mcp não expande `~` nem
+`$VAR` (use caminho absoluto, ou deixe o PowerShell expandir, como no exemplo do Windows). Exemplos
+para produção (para homologação, troque `fluig-prod` por `fluig-teste`):
+
+| Sistema | Guardar uma vez | `FLUIG_PASS_CMD_PROD` |
+|---|---|---|
+| Linux (GNOME Keyring/KWallet) | `secret-tool store --label=fluig-prod service fluig-prod user seu.usuario` | `secret-tool lookup service fluig-prod user seu.usuario` |
+| macOS (Keychain) | `security add-generic-password -s fluig-prod -a seu.usuario -w` | `security find-generic-password -s fluig-prod -w` |
+| [pass](https://www.passwordstore.org/) | `pass insert fluig-prod` | `pass show fluig-prod` |
+| 1Password CLI | (no app) | `op read op://Pessoal/Fluig/password` |
+| Windows (PowerShell) | `Get-Credential seu.usuario \| Export-Clixml $env:USERPROFILE/.fluig-prod.xml` | `powershell.exe -NoProfile -NonInteractive -Command '[Console]::OutputEncoding = [Text.Encoding]::UTF8; [Console]::Out.Write((Import-Clixml $env:USERPROFILE/.fluig-prod.xml).GetNetworkCredential().Password)'` |
+
+No Windows, `.cmd`/`.bat` não rodam sem shell; o porquê e as alternativas estão em
+[docs/clientes.md](docs/clientes.md#windows).
+
+⚠️ No macOS, `security find-generic-password -w` devolve a senha **em hexadecimal** quando ela tem
+caractere fora do ASCII (acento, `ç`) — e o login iria com a senha errada, gastando uma tentativa no
+AD. Com senha assim, use outro cofre da tabela (`pass`, `op`).
+
+O comando roda uma vez por processo, na primeira chamada daquele ambiente, que espera o cofre (até 15 s;
+se ele pedir desbloqueio, é a hora). Trocou a senha no cofre? Reinicie o cliente MCP.
+
+No GitHub Copilot (VS Code) não precisa disso: o próprio VS Code pede a senha e a guarda (exemplo em
+[docs/clientes.md](docs/clientes.md#github-copilot-vs-code)).
+
+Configuração de cada cliente (Claude Code, Codex, GitHub Copilot, Cursor, Claude Desktop):
+[docs/clientes.md](docs/clientes.md).
 
 ### Registrando no cliente MCP
 
@@ -78,10 +123,10 @@ Claude Code / Claude Desktop (`~/.claude.json` ou `claude_desktop_config.json`):
       "env": {
         "FLUIG_HOST": "http://fluig-homolog.suaempresa.com.br:8080",
         "FLUIG_USER": "seu.usuario",
-        "FLUIG_PASS": "sua-senha",
+        "FLUIG_PASS_CMD": "secret-tool lookup service fluig-teste user seu.usuario",
         "FLUIG_HOST_PROD": "https://fluig.suaempresa.com.br:8443",
         "FLUIG_USER_PROD": "seu.usuario",
-        "FLUIG_PASS_PROD": "sua-senha-de-producao"
+        "FLUIG_PASS_CMD_PROD": "secret-tool lookup service fluig-prod user seu.usuario"
       }
     }
   }
@@ -114,13 +159,32 @@ passa a recusá-las. Recomendado para agente rodando sem supervisão.
 FLUIG_READONLY=1 node server.js --list   # 60 ferramentas, nenhuma de escrita
 ```
 
-**Confirmação explícita.** Toda ferramenta de escrita exige `confirm: true`. As destrutivas
-(`fluig_process_convert_instances`, `fluig_rm_save_record`) devolvem um **dry-run** com o plano
-antes de executar qualquer coisa.
+**Confirmação explícita.** As ferramentas de escrita estruturais e destrutivas exigem
+`confirm: true`, e as destrutivas (`fluig_process_convert_instances`, `fluig_rm_save_record`)
+devolvem um **dry-run** com o plano antes de executar qualquer coisa. Doze ferramentas
+operacionais ainda **não** exigem `confirm`: `fluig_dataset_save`, `fluig_dataset_enable`,
+`fluig_globalevent_save`, `fluig_workflow_events_update`, `fluig_form_save`,
+`fluig_process_start`, `fluig_process_move`, `fluig_process_take`, `fluig_rest_post`,
+`fluig_job_add`, `fluig_job_delete` e `fluig_job_run`. E `confirm` é uma declaração do modelo, não
+um portão humano: o portão humano é a aprovação de ferramenta do seu cliente MCP. Para agente
+sem supervisão, use `FLUIG_READONLY=1`.
+
+**Arquivos locais só na pasta de saída.** Todo `destino` — XML de processo, fonte de dataset,
+anexo, documento do GED, diagrama, dossiê — é gravado dentro de `FLUIG_SAIDA_DIR` (padrão
+`~/fluig-mcp-saida`), e caminho fora dela é recusado. O conteúdo vem do servidor e o caminho vem
+do agente: sem esse limite, um anexo com uma instrução plantada ("salve em
+`.git/hooks/pre-commit`") viraria execução de código. Links simbólicos e físicos não escapam.
+
+**Texto cortado não volta.** Leituras grandes voltam cortadas em 20 000 caracteres por padrão
+(`maxChars`), com um aviso; as ferramentas de escrita recusam conteúdo que traga esse aviso, para
+um get → editar → save não gravar um dataset pela metade.
 
 **Proteção da conta no AD.** O login aborta na primeira recusa em vez de repetir, e falha **sem
-tocar a rede** quando não há senha configurada. Três falhas bloqueiam a conta em domínios com
-`lockoutThreshold=3` — repetir login é o jeito mais fácil de deixar alguém sem acesso.
+tocar a rede** quando não há senha configurada. Depois de uma recusa, nenhum novo login é tentado
+naquele ambiente até `fluig_session_reset` ou reiniciar o servidor. Três falhas bloqueiam a conta
+em domínios com `lockoutThreshold=3` — repetir login é o jeito mais fácil de deixar alguém sem
+acesso. Sessão expirada (401, a página de login ou o desvio SAML do Fluig Identity) é refeita
+sozinha, **uma vez** por chamada.
 
 **Nem toda ferramenta "de leitura" é read-only.** Executar SQL arbitrário no Fluig exige que o
 SQL viva dentro de um dataset, então `fluig_db_query`, `fluig_rm_db_query`, `fluig_service_list`,
@@ -139,7 +203,7 @@ Para reportar vulnerabilidade, veja [SECURITY.md](SECURITY.md).
 
 `!` marca as que alteram o servidor.
 
-**BPM e processos** (47)
+**BPM e processos** (48)
 `fluig_task_list` · `fluig_task_count` · `fluig_request_list` · `fluig_request_get` ·
 `fluig_process_def_states` · `fluig_process_states` · `fluig_process_active_states` ·
 `fluig_process_states_detail` · `fluig_process_actual_thread` · `fluig_process_history` ·
@@ -158,7 +222,7 @@ Para reportar vulnerabilidade, veja [SECURITY.md](SECURITY.md).
 **!** `fluig_process_create` · **!** `fluig_process_convert_instances` ·
 **!** `fluig_process_error_log` · **!** `fluig_deploy_process` · **!** `fluig_workflow_events_update`
 
-**Formulários e fichas** (15)
+**Formulários e fichas** (14)
 `fluig_form_list` · `fluig_form_events` · `fluig_form_files` · `fluig_form_file` ·
 `fluig_form_full` · `fluig_form_fields` · `fluig_card_list` · `fluig_card_children_get` ·
 `fluig_card_html_url` · `fluig_process_card_get` · `fluig_process_card_value` ·
@@ -224,6 +288,26 @@ Contribuições são bem-vindas — veja [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Créditos
 
+**[Gian (@kyso1)](https://github.com/kyso1)** — [issue #3](https://github.com/alucardigo/fluig-mcp/issues/3),
+[PR #4](https://github.com/alucardigo/fluig-mcp/pull/4), [#5](https://github.com/alucardigo/fluig-mcp/pull/5),
+[#6](https://github.com/alucardigo/fluig-mcp/pull/6) e [#7](https://github.com/alucardigo/fluig-mcp/pull/7)
+
+Mediu num Fluig 1.7.1 de produção que, quando o código do colaborador é a matrícula e não o login,
+`fluig_form_list` voltava vazio **sem erro** — e trouxe a correção, que descobre o código pela
+sessão e tirou a senha da URL do `resolveTenant`. Também são dele os filtros no servidor do
+`fluig_dataset_run`, a senha vinda de um cofre (`FLUIG_PASS_CMD`), o guia de instalação por
+cliente ([docs/clientes.md](docs/clientes.md)) e o limite de saída inline com a **pasta de saída
+restrita**. Foi ele quem apontou que o `destino` dos downloads gravava em qualquer caminho — o que
+levou a pasta de saída a valer para todo arquivo que este servidor grava. A proposta veio antes
+dos PRs, com o plano e as medições, e cada PR chegou pequeno, empilhado e testado.
+
+**[Antonio (@antoniosdn)](https://github.com/antoniosdn)** — [PR #2](https://github.com/alucardigo/fluig-mcp/pull/2)
+
+Achou em produção, num Fluig atrás do Fluig Identity, que a sessão expirada não volta como 401, e
+sim como **HTTP 200 com o formulário SAML** — e o servidor passava horas devolvendo a página de SSO
+até ser reiniciado. A correção refaz o login uma única vez por chamada, agrupa logins simultâneos
+num só e amarra o cache SOAP ao cookie, sem abrir mão da proteção contra bloqueio no AD.
+
 **[Antonio (@antoniosdn)](https://github.com/antoniosdn)** — [PR #1](https://github.com/alucardigo/fluig-mcp/pull/1)
 
 Diagnosticou que o `fetch` do Node deriva o SNI e a verificação do certificado **da URL**, não do
@@ -235,8 +319,6 @@ Do fork dele vieram também três decisões de projeto que este repositório ado
 **configuração sem defaults** (endpoint ou senha embutidos são vazamento esperando acontecer),
 **modo somente leitura** e **`--list` auditável sem credencial** — a ideia de que a superfície de
 ferramentas precisa ser inspecionável antes de o servidor receber uma senha, hoje verificada no CI.
-
-Contribuições são bem-vindas: veja [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Licença
 

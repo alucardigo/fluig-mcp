@@ -1,0 +1,23 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    # Versão recém-publicada espera uma semana: é a janela em que pacote comprometido costuma ser
+    # descoberto e despublicado.
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    ignore:
+      # undici fica na linha 6: as maiores exigem Node mais novo que o engines >=20 (a 8 quebrou o
+      # CI no Node 20 com webidl.util.markAsUncloneable) — ver o commit "fixar undici na linha 6".
+      - dependency-name: undici
+        update-types: ['version-update:semver-major']
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
