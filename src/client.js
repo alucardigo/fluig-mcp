@@ -56,9 +56,16 @@ const SESSAO_REVALIDAR_MS = 20 * 60_000;
  *
  * Só uma PÁGINA HTML pode ser esse desvio. JSON, XML ou texto de dados nunca contam, mesmo
  * que tragam essas palavras no conteúdo — senão uma gravação bem-sucedida seria repetida.
+ *
+ * Exceção medida num Fluig sem Fluig Identity: as rotas antigas /ecm/api/rest/ecm/* (loadDataset,
+ * getEventList, createDataset, editDataset) sem sessão válida respondem **500** em JSON com o
+ * "UT010031: Login failed" do Undertow — as REST v2 respondem 401. O UT010031 sai da camada de
+ * autenticação, antes de a rota executar, então repetir a requisição depois do novo login é seguro.
+ * Só conta em status de erro: num 200 o texto pode ser dado de verdade.
  */
 export function sessaoExpirada(status, text = '', contentType = '') {
   if (status === 401) return true;
+  if (status >= 400 && /\bUT010031\b/.test(String(text || ''))) return true;
   const corpo = String(text || '').trimStart();
   const ehHtml = /text\/html/i.test(contentType || '')
     || /^<(!doctype\s+html|html|head|body|form)\b/i.test(corpo);
@@ -274,6 +281,17 @@ export class FluigClient {
         'FLUIG_PASS_PROD no registro do MCP; para homologação, FLUIG_PASS.'
       );
     }
+    // O servidor já recusou esta credencial: cada chamada de ferramenta que viesse depois tentaria o
+    // login de novo, e três chamadas bastam para bloquear a conta. A senha só muda reiniciando o
+    // servidor MCP (a configuração é lida uma vez); fluig_session_reset libera UMA nova tentativa.
+    if (this._loginRecusado) {
+      throw new Error(
+        `Login bloqueado nesta sessão do MCP: o servidor já recusou a credencial de ${this.user} em `
+        + `${this.host}. Não vou tentar de novo (cada tentativa gasta uma das chances antes de o AD `
+        + 'bloquear a conta). Corrija a senha e reinicie o servidor MCP, ou rode fluig_session_reset '
+        + 'para forçar uma nova tentativa.',
+      );
+    }
     // Mesmo bloqueio intermitente do IPS/Fortinet visto em _rest() (ver ali) também acerta o
     // login.do em si — um 403 aqui não significa credencial errada, então re-sonda o IP e
     // tenta de novo antes de reportar falha de autenticação (evita alarme falso).
@@ -302,6 +320,7 @@ export class FluigClient {
       // 200 sem cookie de SSO = o Fluig respondeu e RECUSOU a credencial. Abortar já:
       // insistir aqui queima tentativas do AD e bloqueia a conta do usuário.
       if (r.status === 200) {
+        this._loginRecusado = true;
         throw new Error(
           'Falha no login: o servidor respondeu 200 mas não emitiu JSESSIONIDSSO — credencial recusada. ' +
           'NÃO vou repetir (evita bloquear a conta no AD). Verifique a senha do ambiente ' +
@@ -1444,6 +1463,8 @@ export class FluigClient {
   async sessionReset() {
     const antes = this._cookie ? this._cookie.split('; ').map(c => c.split('=')[0]) : [];
     this._descartarSessao();
+    this._loginRecusado = false; // liberação explícita de quem opera: UMA nova tentativa
+
     this._bustIp?.();
     const novo = await this.login();
     return {
