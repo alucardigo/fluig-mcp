@@ -12,6 +12,7 @@ import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../src/config.js';
 import { FluigClient } from '../src/client.js';
+import { consultaDataset } from '../src/datasetFiltros.js';
 import { gravarNaSaida, pastaSaidaPadrao } from '../src/saida.js';
 
 const USAGE = `fluig-cli — opera o TOTVS Fluig pelo terminal
@@ -20,7 +21,7 @@ const USAGE = `fluig-cli — opera o TOTVS Fluig pelo terminal
   fluig-cli dataset list [filtro]               Lista datasets
   fluig-cli dataset get <datasetId>             Fonte de um dataset customizado   -> datasets/
   fluig-cli dataset run <nome> [--limit N] [--fields a,b]
-                                                Executa; --limit corta o que é impresso -> datasets-run/
+                                                Executa; N vira sqlLimit no servidor -> datasets-run/
   fluig-cli form list [filtro]                  Lista formulários
   fluig-cli form events <documentId>            Eventos do formulário             -> forms/<id>/events/
   fluig-cli form get <documentId> [versão]      Arquivos + eventos                -> forms/<id>/
@@ -82,6 +83,12 @@ function lerArgs(argv) {
     opcoes[argv[i].slice(2)] = valor;
     i += 1;
   }
+  if (opcoes.limit !== undefined) {
+    const n = Number(opcoes.limit);
+    // Um valor que não é número viraria "sem limite" em silêncio e traria o dataset inteiro.
+    if (!Number.isInteger(n) || n <= 0) throw new Error(`--limit precisa ser um inteiro positivo, recebi "${opcoes.limit}".`);
+    opcoes.limit = n;
+  }
   const [grupo, acao, ...args] = posicionais;
   return { grupo, acao, args, opcoes };
 }
@@ -115,11 +122,12 @@ export const COMANDOS = {
 
   async 'dataset run'(client, { args, opcoes, saida }) {
     const nome = args[0];
-    const limite = Number(opcoes.limit || 0);
     const fields = (opcoes.fields || '').split(',').map((s) => s.trim()).filter(Boolean);
-    const { columns, values } = await client.runDataset(nome, { fields });
-    salvar(saida, `datasets-run/${nome}.json`, JSON.stringify({ columns, total: values.length, values }, null, 2));
-    print({ columns, total: values.length, sample: limite > 0 ? values.slice(0, limite) : values });
+    // O corte é no servidor (sqlLimit): cortar aqui baixaria o dataset inteiro para mostrar N linhas.
+    const { columns, values } = await client.runDataset(nome, consultaDataset({ fields, serverLimit: opcoes.limit }));
+    const resultado = { columns, total: values.length, values };
+    salvar(saida, `datasets-run/${nome}.json`, JSON.stringify(resultado, null, 2));
+    print(resultado);
   },
 
   async 'form list'(client, { args }) {

@@ -54,6 +54,7 @@ test('controle: com esse ambiente, o loadConfig roda o comando de senha de verda
 for (const [args, mensagem] of [
   [['nada'], /desconhecido/],
   [['dataset', 'nada'], /desconhecido/],
+  [['dataset', 'run', 'ds_x', '--limit', 'abc'], /--limit/],
   [['ping', '--env'], /--env/],
   [['--env', 'xyz', 'ping'], /teste.*prod/],
   // --env prod chega ao loadConfig('prod'), que recusa por falta do par de produção antes de rodar
@@ -107,4 +108,20 @@ test('evento com id que sai da pasta é recusado', async (t) => {
   const cliente = { getFormEvents: async () => [{ eventId: '../../../fora', eventDescription: 'x' }] };
   await assert.rejects(COMANDOS['form events'](cliente, { args: ['7'], opcoes: {}, saida }), /recusado/);
   assert.equal(existsSync(join(raiz, 'fora.js')), false);
+});
+
+test('dataset run manda --limit ao servidor como sqlLimit', async (t) => {
+  calar(t);
+  const saida = pasta(t);
+  let consulta;
+  const cliente = {
+    runDataset: async (_nome, c) => {
+      consulta = c;
+      return { columns: ['a'], values: [{ a: 1 }] };
+    },
+  };
+  await COMANDOS['dataset run'](cliente, { args: ['ds_x'], opcoes: { limit: 5, fields: 'a, b' }, saida });
+  assert.deepEqual(consulta.fields, ['a', 'b']);
+  assert.ok(consulta.constraints.some((c) => c.fieldName === 'sqlLimit' && c.initialValue === '5'), JSON.stringify(consulta));
+  assert.ok(existsSync(join(saida, 'datasets-run', 'ds_x.json')));
 });
