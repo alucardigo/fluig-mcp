@@ -134,7 +134,7 @@ const TOOLS = [
     name: 'fluig_form_list',
     description: 'Lista formulários (documentId, versão, descrição, dataset). Filtro opcional.',
     inputSchema: S({ filtro: str('substring para filtrar (opcional)') }),
-    handler: async ({ filtro }) => resumoFormularios(await client.listForms(), filtro, client.userCode),
+    handler: async ({ filtro }) => resumoFormularios(await client.listForms(), filtro, client.userCode, client._varUserCode),
   },
   {
     name: 'fluig_form_events',

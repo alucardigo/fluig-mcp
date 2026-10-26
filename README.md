@@ -97,6 +97,10 @@ para produção (para homologação, troque `fluig-prod` por `fluig-teste`):
 No Windows, `.cmd`/`.bat` não rodam sem shell; o porquê e as alternativas estão em
 [docs/clientes.md](docs/clientes.md#windows).
 
+⚠️ No macOS, `security find-generic-password -w` devolve a senha **em hexadecimal** quando ela tem
+caractere fora do ASCII (acento, `ç`) — e o login iria com a senha errada, gastando uma tentativa no
+AD. Com senha assim, use outro cofre da tabela (`pass`, `op`).
+
 O comando roda uma vez por processo, na primeira chamada daquele ambiente, que espera o cofre (até 15 s;
 se ele pedir desbloqueio, é a hora). Trocou a senha no cofre? Reinicie o cliente MCP.
 

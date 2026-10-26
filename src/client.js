@@ -317,8 +317,9 @@ export class FluigClient {
       this._cookie = setCookies.map(c => c.split(';')[0]).join('; ');
       if (/JSESSIONIDSSO|jwt\.token/.test(this._cookie)) {
         this._cookieAt = Date.now();
-        await this._descobrirUserCode(this._cookie);
-        return this._cookie;
+        const aceito = this._cookie;
+        await this._descobrirUserCode(aceito);
+        return this._cookie || aceito;
       }
       this._cookie = null;
       // 200 sem cookie de SSO = o Fluig respondeu e RECUSOU a credencial. Abortar já:
@@ -694,7 +695,12 @@ export class FluigClient {
 
   async saveGlobalEvent(eventId, code) {
     const list = await this.listGlobalEvents();
-    const arr = Array.isArray(list) ? list.slice() : [];
+    // A rota grava a LISTA INTEIRA: partir de [] quando a leitura falha apagaria os outros eventos.
+    if (!Array.isArray(list)) {
+      throw new Error(`saveGlobalEvent: não consegui ler a lista atual de eventos globais (HTTP ${list?._status ?? '?'}). `
+        + 'Nada foi gravado — gravar sem ela apagaria os outros eventos.');
+    }
+    const arr = list.slice();
     const dto = { globalEventPK: { companyId: this.companyId, eventId }, eventDescription: code };
     const idx = arr.findIndex(e => e.globalEventPK && e.globalEventPK.eventId === eventId);
     if (idx === -1) arr.push(dto); else arr[idx] = dto;
@@ -1590,6 +1596,15 @@ export class FluigClient {
     }
   }
 
+  /** 2xx com a página de login/SSO não é sucesso: a escrita não aconteceu. */
+  _recusarPaginaDeSessao(r, texto, contexto) {
+    if (sessaoExpirada(r.status, texto, r.headers.get('content-type'))) {
+      this._descartarSessao();
+      throw new Error(`${contexto}: o servidor devolveu a página de login/SSO — a sessão expirou e NADA foi gravado. `
+        + 'Tente de novo (o próximo pedido faz um novo login).');
+    }
+  }
+
   _binarioDeSessaoExpirada(status, buffer, contentType) {
     if (status < 400 && !/text\/html/i.test(contentType)) return false;
     return sessaoExpirada(status, buffer.toString('utf8', 0, 64 * 1024), contentType);
@@ -1812,6 +1827,7 @@ export class FluigClient {
     });
     const texto = await r.text();
     if (r.status < 200 || r.status >= 300) throw new Error(`formCreate: HTTP ${r.status} — ${texto.slice(0, 400)}`);
+    this._recusarPaginaDeSessao(r, texto, 'formCreate');
     try { return JSON.parse(texto); } catch { return { ok: true, status: r.status, resposta: texto }; }
   }
 
@@ -1934,6 +1950,7 @@ export class FluigClient {
     const r = await this._fetch(p, { method: 'POST', headers: { Cookie: cookie, Accept: 'application/json' }, body: fd });
     const texto = await r.text();
     if (r.status < 200 || r.status >= 300) throw new Error(`gedUpload: HTTP ${r.status} — ${texto.slice(0, 400)}`);
+    this._recusarPaginaDeSessao(r, texto, 'gedUpload');
     try { return JSON.parse(texto); } catch { return { ok: true, status: r.status, arquivo: nome, resposta: texto }; }
   }
 

@@ -36,7 +36,15 @@ export const MAX_CHARS_PADRAO = 20000;
 export const MARCA_CORTE = '[… cortado:';
 
 export function pastaSaidaPadrao(env = process.env, home = homedir()) {
-  return env.FLUIG_SAIDA_DIR || join(home, 'fluig-mcp-saida');
+  const valor = String(env.FLUIG_SAIDA_DIR || '').trim();
+  if (!valor) return join(home, 'fluig-mcp-saida');
+  // O cliente MCP passa a variável sem shell: "~" chegaria literal, e um caminho relativo seria
+  // resolvido contra a pasta do processo — o projeto do usuário, que é justamente o que se quer evitar.
+  const expandido = /^~(?=$|[\\/])/.test(valor) ? join(home, valor.slice(1)) : valor;
+  if (!isAbsolute(expandido)) {
+    throw new Error(`FLUIG_SAIDA_DIR precisa ser um caminho absoluto (ou começar com ~): "${valor}".`);
+  }
+  return expandido;
 }
 
 /** lstat que devolve null quando não existe (existsSync seguiria o link e diria que um link quebrado não existe). */
@@ -73,6 +81,12 @@ export function conferirDestino(destino, { base = pastaSaidaPadrao() } = {}) {
   const rel = relative(raiz, arquivo);
   if (rel === '') throw recusa('precisa ser um nome de arquivo, não a própria pasta de saída');
   if (fora(rel)) throw recusa();
+  // No Windows o Node grava com o prefixo \\?\, que aceita nomes que o próprio Windows não aceita:
+  // "a." e "a " ou CON/NUL/COM1 viram entradas que o Explorer e o PowerShell não conseguem apagar.
+  if (process.platform === 'win32') {
+    const ruim = rel.split(sep).find((p) => /[. ]$/.test(p) || /^(con|prn|aux|nul|com\d|lpt\d)(\..*)?$/i.test(p));
+    if (ruim) throw recusa(`inválido no Windows ("${ruim}": nome reservado ou terminado em ponto/espaço)`);
+  }
   return arquivo;
 }
 
