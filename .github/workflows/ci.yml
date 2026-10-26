@@ -9,18 +9,29 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-24.04]
         node: ['20', '22', '24']
+        include:
+          # src/saida.js tem caminho próprio para Windows (junction, sem O_NOFOLLOW) e boa parte de
+          # quem usa o servidor está no Windows; uma versão do Node basta para exercitar isso.
+          - os: windows-latest
+            node: '24'
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -36,11 +47,13 @@ jobs:
       # A superfície de ferramentas precisa ser inspecionável SEM credencial — é isso que
       # permite auditar o servidor antes de entregar uma senha a ele. Logo, é um teste.
       - name: Lista as ferramentas sem nenhuma configuração
+        shell: bash
         run: |
           node server.js --list
           test "$(node server.js --list | grep -cE 'fluig_[a-z_0-9]+:')" -eq 97
 
       - name: Modo somente leitura não expõe nenhuma escrita
+        shell: bash
         env:
           FLUIG_READONLY: '1'
         run: |
@@ -49,19 +62,35 @@ jobs:
 
       # Variável faltando tem que falhar alto, nunca cair num servidor default.
       - name: Sem configuração, falha limpo
+        shell: bash
         run: |
           if node server.js; then
             echo 'esperava saída != 0 sem FLUIG_HOST/USER/PASS' >&2
             exit 1
           fi
 
+      # O que vai para o npm: a CLI e as docs entram, testes e config de CI não.
+      - name: Conteúdo do pacote
+        if: matrix.os == 'ubuntu-24.04' && matrix.node == '24'
+        shell: bash
+        run: |
+          npm pack --dry-run --json > pack.json
+          node -e '
+            const f = require("./pack.json")[0].files.map((x) => x.path);
+            const falta = ["server.js", "bin/cli.js", "src/client.js", "src/saida.js", "docs/clientes.md", "LICENSE"].filter((p) => !f.includes(p));
+            const sobra = f.filter((p) => /^(test|\.github)\//.test(p));
+            if (falta.length || sobra.length) { console.error({ falta, sobra }); process.exit(1); }
+            console.log(f.length + " arquivos no pacote");
+          '
+
   scan-segredos:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
       - name: Gitleaks
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

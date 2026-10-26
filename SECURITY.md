@@ -23,21 +23,38 @@ Este servidor é uma ponte entre um agente de IA e um Fluig real. Isso significa
 - **A senha de produção não cai na de homologação.** Esse fallback existia e era uma armadilha:
   mandava a credencial de homologação contra produção.
 - **O login não repete.** Ao ser recusado, aborta na primeira tentativa; e falha **sem tocar a
-  rede** quando não há senha configurada. Em domínio com `lockoutThreshold=3`, repetir login é o
-  jeito mais fácil de bloquear a conta de alguém.
+  rede** quando não há senha configurada. Depois de uma recusa, nenhum novo login é tentado
+  naquele ambiente até `fluig_session_reset` ou reiniciar o servidor — senão cada chamada de
+  ferramenta seguinte gastaria uma tentativa. Em domínio com `lockoutThreshold=3`, repetir login é
+  o jeito mais fácil de bloquear a conta de alguém.
+- **Sessão expirada é refeita uma vez por chamada**, nunca em laço, e logins simultâneos viram um
+  só.
 
-Se você registra o servidor no config do cliente MCP, a senha fica em texto plano nesse arquivo.
-Prefira variáveis de ambiente do sistema ou um gerenciador de segredos quando o ambiente permitir.
+Se você registra o servidor no config do cliente MCP com `FLUIG_PASS`, a senha fica em texto plano
+nesse arquivo. Prefira `FLUIG_PASS_CMD` / `FLUIG_PASS_CMD_PROD`: a senha vem de um comando do seu
+cofre (`secret-tool`, `security`, `pass`, `op`), executado sem shell — veja
+[docs/clientes.md](docs/clientes.md).
 
 ### Escrita
 
-- Toda ferramenta que altera o servidor exige `confirm: true`.
+- As ferramentas de escrita estruturais e destrutivas exigem `confirm: true`. Doze operacionais
+  ainda não exigem (lista no README, seção Segurança) — e `confirm` é uma declaração do modelo,
+  não um portão humano: o portão humano é a aprovação de ferramenta do cliente MCP.
 - As destrutivas (`fluig_process_convert_instances`, `fluig_rm_save_record`) devolvem **dry-run**
   com o plano antes de executar.
 - `FLUIG_READONLY=1` remove as 37 ferramentas de escrita da listagem e passa a recusá-las. Use
   isso para agente sem supervisão.
 - `env` é obrigatório em toda chamada. Não existe ambiente default — é o que impede escrever em
   produção achando que é homologação.
+
+### Arquivos locais
+
+Todo `destino` — XML de processo, fonte de dataset, anexo, documento do GED, diagrama, dossiê — é
+gravado dentro de `FLUIG_SAIDA_DIR` (padrão `~/fluig-mcp-saida`, pasta 0700, arquivos 0600). O
+conteúdo vem do servidor e o caminho vem do agente: sem esse limite, um anexo com uma instrução
+plantada poderia ser gravado em `~/.bashrc` ou num hook do git. Caminho fora da pasta é recusado,
+links simbólicos e junctions são conferidos pelo caminho real, e a gravação por temporário +
+`rename` não segue link físico.
 
 ### Ferramentas de leitura que escrevem
 

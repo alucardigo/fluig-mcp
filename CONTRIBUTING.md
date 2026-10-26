@@ -31,8 +31,12 @@ de propósito — heurística por nome errava nos dois sentidos. Se a sua ferram
 coisa no servidor, inclusive gravar um dataset descartável para executar SQL, ela é escrita.
 Um modo somente leitura que vaza uma ferramenta de escrita é pior do que não existir.
 
-**Escrita exige `confirm`. Destrutiva exige dry-run.** Se a operação pode perder trabalho de
+**Escrita nova exige `confirm`. Destrutiva exige dry-run.** (Doze ferramentas operacionais
+anteriores a esta regra ainda não pedem `confirm` — lista no README.) Se a operação pode perder trabalho de
 alguém (converter instâncias, apagar versão, gravar no ERP), ela precisa mostrar o plano antes.
+
+**Arquivo local só pela pasta de saída.** Ferramenta que grava arquivo usa `gravarNaSaida` /
+`entregarTexto` de `src/saida.js`, nunca `writeFileSync` com caminho vindo do agente.
 
 **Não teste em processo com solicitações abertas.** Para ponta a ponta, crie processo descartável
 com prefixo `ZZ_TESTE_` e limpe depois.
