@@ -4,6 +4,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Versão recém-publicada espera uma semana: é a janela em que pacote comprometido costuma ser
+    # descoberto e despublicado.
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     ignore:
       # undici fica na linha 6: as maiores exigem Node mais novo que o engines >=20 (a 8 quebrou o
@@ -15,3 +19,5 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
