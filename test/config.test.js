@@ -83,3 +83,38 @@ test('FLUIG_READONLY aceita as formas usuais de "sim"', () => {
     assert.equal(loadConfig('teste', { ...HOMOLOG, FLUIG_READONLY: v }).readOnly, false, v);
   }
 });
+
+// ---------- FLUIG_PASS_CMD: senha vinda de um comando (cofre do sistema), não do JSON do cliente ----------
+const NODE = `"${process.execPath}"`;
+const BASE = { FLUIG_HOST: 'http://fluig.exemplo.com.br:8080', FLUIG_USER: 'fulano' };
+
+test('dividirComando respeita aspas e não usa shell', async () => {
+  const { dividirComando } = await import('../src/config.js');
+  assert.deepEqual(dividirComando(`secret-tool lookup service "fluig prod" user 'fu lano'`),
+    ['secret-tool', 'lookup', 'service', 'fluig prod', 'user', 'fu lano']);
+  assert.throws(() => dividirComando('pass show "fluig'), /aspas/);
+});
+
+test('FLUIG_PASS_CMD fornece a senha (sem a quebra de linha final)', () => {
+  const cfg = loadConfig('teste', { ...BASE, FLUIG_PASS_CMD: `${NODE} -e "process.stdout.write('s3nha\\n')"` });
+  assert.equal(cfg.pass, 's3nha');
+});
+
+test('FLUIG_PASS e FLUIG_PASS_CMD juntos é erro explícito', () => {
+  assert.throws(
+    () => loadConfig('teste', { ...BASE, FLUIG_PASS: 'x', FLUIG_PASS_CMD: `${NODE} -e "1"` }),
+    /FLUIG_PASS.*FLUIG_PASS_CMD|não os dois/,
+  );
+});
+
+test('comando que falha ou não imprime nada é erro antes de qualquer login', () => {
+  assert.throws(() => loadConfig('teste', { ...BASE, FLUIG_PASS_CMD: `${NODE} -e "process.exit(3)"` }), /FLUIG_PASS_CMD/);
+  assert.throws(() => loadConfig('teste', { ...BASE, FLUIG_PASS_CMD: `${NODE} -e "1"` }), /FLUIG_PASS_CMD.*vazia/);
+});
+
+test('produção usa FLUIG_PASS_CMD_PROD, e a falta de senha cita as duas opções', () => {
+  const env = { FLUIG_HOST_PROD: 'https://x:8443', FLUIG_USER_PROD: 'fulano' };
+  assert.throws(() => loadConfig('prod', env), /FLUIG_PASS_PROD \(ou FLUIG_PASS_CMD_PROD\)/);
+  const cfg = loadConfig('prod', { ...env, FLUIG_PASS_CMD_PROD: `${NODE} -e "process.stdout.write('p')"` });
+  assert.equal(cfg.pass, 'p');
+});
