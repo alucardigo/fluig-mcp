@@ -245,3 +245,43 @@ test('falha de rede no login.do NÃO trava (não é recusa de credencial)', asyn
   await assert.rejects(() => c.login(), /Falha no login \(HTTP 403\)/);
   assert.equal(logins, 6, 'bloqueio de rede continua com as 3 tentativas por chamada');
 });
+
+test('REST cru que continua com a página de SSO depois do novo login é erro, nunca "200 ok"', async () => {
+  // Ferramentas de escrita olham só o status do _restRaw: um 200 com a página de SSO viraria ok:true.
+  const c = novoCliente();
+  const srv = servidorFalso(c, [resposta(200, PAGINA_SAML), resposta(200, PAGINA_SAML)]);
+  await assert.rejects(() => c._restRaw('/api/x', { method: 'PUT', body: '<a/>', contentType: 'application/xml' }),
+    /sessão expirada mesmo depois de um novo login/);
+  assert.equal(srv.logins, 2);
+});
+
+test('erro de rede na revalidação NÃO derruba a sessão (não é sessão morta)', async () => {
+  const c = novoCliente();
+  c._cookie = 'JSESSIONIDSSO=antigo';
+  c._cookieAt = Date.now() - 60 * 60_000;
+  const srv = servidorFalso(c, []);
+  c._fetch = async (path) => {
+    if (path === '/portal/api/servlet/login.do') { srv.logins++; return resposta(302, '', { setCookie: ['JSESSIONIDSSO=novo'] }); }
+    throw new Error('fetch failed');
+  };
+  assert.equal(await c.login(), 'JSESSIONIDSSO=antigo');
+  assert.equal(srv.logins, 0, 'sem resposta do servidor não dá para dizer que a sessão morreu');
+});
+
+test('fluig_session_reset durante uma revalidação em andamento faz login NOVO', async () => {
+  const c = novoCliente();
+  c._cookie = 'JSESSIONIDSSO=antigo';
+  c._cookieAt = Date.now() - 60 * 60_000;
+  let liberar;
+  c._sessaoViva = () => new Promise((r) => { liberar = r; });
+  const srv = servidorFalso(c, []);
+  const revalidando = c.login();
+  await Promise.resolve();
+  const reset = c.sessionReset();
+  liberar(true); // a revalidação diria que o cookie antigo ainda vale
+  await revalidando;
+  const r = await reset;
+  assert.equal(srv.logins, 1);
+  assert.deepEqual(r.cookiesAgora, ['JSESSIONIDSSO']);
+  assert.equal(c._cookie, 'JSESSIONIDSSO=s1');
+});
