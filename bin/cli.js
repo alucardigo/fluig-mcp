@@ -4,14 +4,15 @@
  *
  * Serve para conferir credencial e conectividade antes de ligar o servidor MCP num agente, e para
  * despejar datasets, formulários e definições de processo em disco.
+ *
+ * Tudo o que é gravado fica preso à pasta de saída (src/saida.js), a mesma do servidor: nome de anexo
+ * de formulário e id de evento vêm do SERVIDOR, e um "../" plantado ali levaria a escrita para fora.
  */
-import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../src/config.js';
 import { FluigClient } from '../src/client.js';
-
-const OUT_DIR = process.env.FLUIG_OUT_DIR || join(process.cwd(), 'out');
+import { gravarNaSaida, pastaSaidaPadrao } from '../src/saida.js';
 
 const USAGE = `fluig-cli — opera o TOTVS Fluig pelo terminal
 
@@ -31,8 +32,8 @@ const USAGE = `fluig-cli — opera o TOTVS Fluig pelo terminal
 
 Opções (em qualquer posição):
   --env teste|prod   Ambiente (padrão: teste)
-
-Os caminhos depois de -> são relativos a ./out (ou a FLUIG_OUT_DIR).
+  --out <pasta>      Pasta de saída (padrão: FLUIG_SAIDA_DIR, ou ~/fluig-mcp-saida).
+                     Os caminhos depois de -> são relativos a ela.
 
 Ambiente: FLUIG_HOST, FLUIG_USER e FLUIG_PASS ou FLUIG_PASS_CMD; com --env prod, FLUIG_HOST_PROD,
 FLUIG_USER_PROD e FLUIG_PASS_PROD ou FLUIG_PASS_CMD_PROD. Veja README.md e .env.example.`;
@@ -43,18 +44,29 @@ function print(x) {
 
 // Na saída de erro, para não misturar com o que o comando imprime no stdout.
 function salvar(saida, relativo, conteudo) {
-  const arquivo = join(saida, relativo);
-  mkdirSync(dirname(arquivo), { recursive: true });
-  writeFileSync(arquivo, conteudo, 'utf8');
-  console.error(`  -> gravado: ${arquivo}`);
+  console.error(`  -> gravado: ${gravarNaSaida(relativo, conteudo, { base: saida })}`);
+}
+
+/**
+ * Nome de arquivo que vem do SERVIDOR (anexo de formulário, id de evento) precisa ser UM nome, sem
+ * pasta. A contenção do gravarNaSaida sozinha não basta: "forms/7/../../x" ainda cai dentro da pasta de
+ * saída, só que sobre o arquivo de outro comando. ':' fica de fora porque no Windows é unidade ("C:x")
+ * ou fluxo alternativo do NTFS ("a:b" grava num fluxo escondido de "a").
+ */
+export function nomeDeArquivo(nome) {
+  const n = String(nome ?? '');
+  if (!n.trim() || n === '.' || n === '..' || /[\\/:\0]/.test(n)) {
+    throw new Error(`nome de arquivo vindo do servidor recusado: ${JSON.stringify(n)}. Precisa ser um nome simples, sem pasta.`);
+  }
+  return n;
 }
 
 function salvarEventos(saida, pasta, eventos, campo) {
-  for (const e of eventos) salvar(saida, `${pasta}/${e.eventId}.js`, e[campo] || '');
+  for (const e of eventos) salvar(saida, `${pasta}/${nomeDeArquivo(`${e.eventId}.js`)}`, e[campo] || '');
 }
 
 // Opções que levam valor.
-const OPCOES = ['--env', '--limit', '--fields'];
+const OPCOES = ['--env', '--out', '--limit', '--fields'];
 
 /** Separa opções de posicionais. Erro aqui acontece antes do loadConfig: sem comando de senha, sem rede. */
 function lerArgs(argv) {
@@ -132,8 +144,10 @@ export const COMANDOS = {
     const versao = Number(args[1] || 1000);
     const nomes = await client.getFormFileNames(documentId);
     for (const nome of nomes) {
+      const destino = `forms/${documentId}/${nomeDeArquivo(nome)}`; // confere antes de baixar
       const b64 = await client.getFormFileBase64(documentId, versao, nome);
-      if (b64) salvar(saida, `forms/${documentId}/${nome}`, Buffer.from(b64, 'base64').toString('utf8'));
+      // Os bytes direto: passar por texto UTF-8 corromperia imagem e qualquer outro anexo binário.
+      if (b64) salvar(saida, destino, Buffer.from(b64, 'base64'));
     }
     const eventos = await client.getFormEvents(documentId);
     salvarEventos(saida, `forms/${documentId}/events`, eventos, 'eventDescription');
@@ -203,7 +217,7 @@ async function main(argv) {
     falhar(err.message);
     return;
   }
-  await COMANDOS[chave](client, { args, opcoes, saida: OUT_DIR });
+  await COMANDOS[chave](client, { args, opcoes, saida: opcoes.out ?? pastaSaidaPadrao() });
 }
 
 // Roda só como programa; importado (pelos testes), apenas expõe as funções. realpath dos dois lados
