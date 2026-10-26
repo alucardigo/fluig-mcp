@@ -1210,10 +1210,12 @@ Uso:
   fluig-mcp --help      Mostra esta mensagem.
 
 Ambiente (nenhum tem default — veja .env.example):
-  Homologação:  FLUIG_HOST       FLUIG_USER       FLUIG_PASS
-  Produção:     FLUIG_HOST_PROD  FLUIG_USER_PROD  FLUIG_PASS_PROD
+  Homologação:  FLUIG_HOST       FLUIG_USER       FLUIG_PASS       (ou FLUIG_PASS_CMD)
+  Produção:     FLUIG_HOST_PROD  FLUIG_USER_PROD  FLUIG_PASS_PROD  (ou FLUIG_PASS_CMD_PROD)
 
+  FLUIG_PASS_CMD    comando que imprime a senha (cofre do sistema); vale a primeira linha.
   FLUIG_READONLY=1  expõe SOMENTE as ferramentas que não alteram o servidor.
+  FLUIG_SAIDA_DIR   pasta onde o parâmetro destino grava (padrão: ~/fluig-mcp-saida).
 
 Toda chamada exige o parâmetro env ("teste" ou "prod"). Não há default: é o que impede
 ler homologação achando que é produção — e escrever em produção achando que é teste.`;
@@ -1241,7 +1243,8 @@ const configurados = ambientesConfigurados();
 if (!configurados.length) {
   console.error(
     'fluig-mcp: nenhum ambiente configurado. Defina FLUIG_HOST/FLUIG_USER/FLUIG_PASS '
-    + '(homologação) e/ou FLUIG_HOST_PROD/FLUIG_USER_PROD/FLUIG_PASS_PROD (produção). '
+    + '(homologação) e/ou FLUIG_HOST_PROD/FLUIG_USER_PROD/FLUIG_PASS_PROD (produção); no lugar '
+    + 'da senha, FLUIG_PASS_CMD/FLUIG_PASS_CMD_PROD lê de um comando (cofre do sistema). '
     + 'Veja .env.example. Rode --list para inspecionar as ferramentas sem credencial.',
   );
   process.exit(1);

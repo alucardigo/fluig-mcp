@@ -281,7 +281,8 @@ export class FluigClient {
       throw new Error(
         `Sem senha configurada para ${this.host} — não vou tentar o login (cada tentativa ` +
         'queima uma das 3 chances antes do AD bloquear a conta). Para PRODUÇÃO defina ' +
-        'FLUIG_PASS_PROD no registro do MCP; para homologação, FLUIG_PASS.'
+        'FLUIG_PASS_PROD (ou FLUIG_PASS_CMD_PROD) no registro do MCP; para homologação, ' +
+        'FLUIG_PASS (ou FLUIG_PASS_CMD).'
       );
     }
     // O servidor já recusou esta credencial: cada chamada de ferramenta que viesse depois tentaria o
@@ -327,7 +328,8 @@ export class FluigClient {
         throw new Error(
           'Falha no login: o servidor respondeu 200 mas não emitiu JSESSIONIDSSO — credencial recusada. ' +
           'NÃO vou repetir (evita bloquear a conta no AD). Verifique a senha do ambiente ' +
-          `(FLUIG_PASS / FLUIG_PASS_PROD) antes de tentar de novo. host=${this.host} user=${this.user}`
+          '(FLUIG_PASS / FLUIG_PASS_PROD, ou o item do cofre lido por FLUIG_PASS_CMD / FLUIG_PASS_CMD_PROD) ' +
+          `antes de tentar de novo. host=${this.host} user=${this.user}`
         );
       }
       if (attempt < 2) this._bustIp();
