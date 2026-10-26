@@ -16,7 +16,7 @@ import { loadConfig, ambientesConfigurados } from './src/config.js';
 import { FluigClient } from './src/client.js';
 import { resumoFormularios } from './src/formularios.js';
 import { consultaDataset, OPERADORES } from './src/datasetFiltros.js';
-import { entregarTexto, recusarCortado } from './src/saida.js';
+import { entregarTexto, MAX_CHARS_PADRAO, recusarCortado } from './src/saida.js';
 import { client, comCliente } from './src/despacho.js';
 import { readFileSync } from 'node:fs';
 
@@ -470,7 +470,25 @@ const TOOLS = [
     }, ['processId']),
     handler: async ({ processId, version, destino, maxChars }) => {
       const evs = await client.getProcessEventsFromXml(processId, version);
-      return entregarTexto(JSON.stringify({ processId, total: evs.length, eventos: evs }, null, 2), { destino, maxChars });
+      const tudo = JSON.stringify({ processId, total: evs.length, eventos: evs }, null, 2);
+      if (destino) return entregarTexto(tudo, { destino });
+      // Corta por EVENTO inteiro: cortar a string no meio deixaria um JSON inválido e um evento pela
+      // metade, que o agente leria como se terminasse ali.
+      const limite = Math.floor(Number(maxChars)) > 0 ? Math.floor(Number(maxChars)) : MAX_CHARS_PADRAO;
+      if (tudo.length <= limite) return tudo;
+      const cabem = [];
+      let tamanho = 0;
+      for (const ev of evs) {
+        tamanho += JSON.stringify(ev, null, 2).length;
+        if (tamanho > limite) break;
+        cabem.push(ev);
+      }
+      return {
+        processId, total: evs.length, eventos: cabem,
+        omitidos: evs.slice(cabem.length).map((ev) => ev.eventId ?? ev.name ?? '?'),
+        aviso: `Só ${cabem.length} de ${evs.length} eventos cabem em ${limite} caracteres. `
+          + 'Informe destino para gravar todos em arquivo, ou aumente maxChars.',
+      };
     },
   },
   {
@@ -1147,8 +1165,8 @@ for (const t of TOOLS) {
   t.inputSchema.properties = t.inputSchema.properties || {};
   t.inputSchema.properties.env = {
     type: 'string', enum: ['teste', 'prod'],
-    description: 'OBRIGATÓRIO. Ambiente alvo: "teste" (o servidor de homologação — homologação) ou "prod" '
-      + '(fluig.exemplo.com.br — PRODUÇÃO REAL). Não há default: a escolha é sempre explícita, '
+    description: 'OBRIGATÓRIO. Ambiente alvo: "teste" (homologação, o host de FLUIG_HOST) ou "prod" '
+      + '(PRODUÇÃO REAL, o host de FLUIG_HOST_PROD). Não há default: a escolha é sempre explícita, '
       + 'para que ninguém leia homologação achando que é produção nem escreva em produção achando '
       + 'que é teste.',
   };
@@ -1253,7 +1271,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       content: [{ type: 'text', text:
         `ERRO: a ferramenta ${req.params.name} exige o parâmetro env="teste" ou env="prod". `
         + 'Não existe default — informe o ambiente explicitamente. '
-        + 'teste = o servidor de homologação (homologação) · prod = fluig.exemplo.com.br (PRODUÇÃO REAL).' }],
+        + 'teste = homologação (FLUIG_HOST) · prod = PRODUÇÃO REAL (FLUIG_HOST_PROD).' }],
       isError: true,
     };
   }
