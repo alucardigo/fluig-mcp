@@ -173,3 +173,26 @@ test('no Windows, .cmd sem shell vira erro com a dica do .exe/powershell', { ski
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('--help e a falta de ambiente citam FLUIG_PASS_CMD e FLUIG_SAIDA_DIR', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const server = new URL('../server.js', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
+  const limpo = { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot };
+  const help = execFileSync(process.execPath, [server, '--help'], { encoding: 'utf8', env: limpo });
+  assert.match(help, /FLUIG_PASS_CMD\b/);
+  assert.match(help, /FLUIG_PASS_CMD_PROD/);
+  assert.match(help, /FLUIG_SAIDA_DIR/);
+  assert.throws(
+    () => execFileSync(process.execPath, [server], { encoding: 'utf8', timeout: 15000, env: limpo }),
+    (e) => /nenhum ambiente configurado/i.test(String(e.stderr)) && /FLUIG_PASS_CMD/.test(String(e.stderr)),
+  );
+});
+
+test('senha ausente e credencial recusada citam também FLUIG_PASS_CMD', async () => {
+  const { FluigClient } = await import('../src/client.js');
+  const cfg = { host: 'http://fluig.exemplo.com.br:8080', user: 'fulano', userCode: 'fulano', companyId: 1, seedIps: [] };
+  await assert.rejects(() => new FluigClient({ ...cfg, pass: '' }).login(), /FLUIG_PASS_CMD/);
+  const c = new FluigClient({ ...cfg, pass: 'errada' });
+  c._fetch = async () => ({ status: 200, headers: { getSetCookie: () => [] }, text: async () => '{}' });
+  await assert.rejects(() => c.login(), (e) => /credencial recusada/.test(e.message) && /FLUIG_PASS_CMD/.test(e.message));
+});
