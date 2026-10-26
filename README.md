@@ -66,6 +66,7 @@ servidor de outra pessoa.
 | `FLUIG_HOST_PROD` · `FLUIG_USER_PROD` · `FLUIG_PASS_PROD` | produção (`env: "prod"`) | para usar produção |
 | `FLUIG_PASS_CMD` · `FLUIG_PASS_CMD_PROD` | no lugar da senha: comando que a imprime (cofre do sistema) | não |
 | `FLUIG_USERCODE` · `FLUIG_USERCODE_PROD` | código do colaborador; sem ele, é descoberto pela sessão | não |
+| `FLUIG_SAIDA_DIR` | pasta onde o parâmetro `destino` grava (padrão `~/fluig-mcp-saida`; fora dela é recusado) | não |
 | `FLUIG_READONLY=1` | ambos | não — mas leia [Segurança](#segurança) |
 
 Configure um dos pares, ou os dois. Veja [`.env.example`](.env.example) para as opcionais
