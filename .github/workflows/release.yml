@@ -1,0 +1,51 @@
+name: Release
+
+# Publica no npm quando uma tag vX.Y.Z é empurrada. O processo recebe credenciais de produção do
+# Fluig, então a cadeia de publicação precisa ser verificável: o pacote sai daqui, com provenance
+# (atestado de qual commit e qual workflow o geraram), nunca da máquina de alguém.
+#
+# Autenticação: trusted publishing (OIDC) configurado em npmjs.com → fluig-mcp → Settings, apontando
+# para este repositório e este arquivo. Sem ele, um segredo NPM_TOKEN (granular, só publish deste
+# pacote) também funciona.
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions: {}
+
+jobs:
+  publicar:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write   # OIDC do trusted publishing e assinatura do provenance
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      # Sem cache de propósito: cache compartilhado em job de publicação é vetor de envenenamento.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+
+      - name: A tag bate com a versão do package.json
+        run: |
+          versao="v$(node -p 'require("./package.json").version')"
+          if [ "$versao" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME, package.json $versao" >&2
+            exit 1
+          fi
+
+      - name: Publica
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
