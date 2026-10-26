@@ -14,6 +14,9 @@
  *   Homologação:  FLUIG_HOST       FLUIG_USER        FLUIG_PASS
  *   Produção:     FLUIG_HOST_PROD  FLUIG_USER_PROD   FLUIG_PASS_PROD
  *
+ * No lugar da senha, FLUIG_PASS_CMD / FLUIG_PASS_CMD_PROD: um comando que a imprime, para ela ficar no
+ * cofre do sistema e não em texto puro no config do cliente MCP (ver senhaDoComando).
+ *
  * ⚠️ A credencial de produção NÃO cai na de homologação. Esse fallback existia e era uma
  *    armadilha: mandava a senha de homologação contra produção e queimava tentativas do
  *    Active Directory — o suficiente para bloquear a conta do usuário.
@@ -54,21 +57,53 @@ export function dividirComando(texto) {
 }
 
 /**
+ * Por que o comando falhou, sem nunca incluir o stdout: num comando que imprimiu a senha e depois saiu
+ * com erro, o stdout é a própria senha. O stderr é o que explica a falha ("not signed in", "No secret
+ * key"), então vai junto, numa linha e cortado.
+ */
+function motivoDaFalha(e) {
+  if (e.code === 'ETIMEDOUT') return 'não respondeu em 15 s; o cofre está esperando ser desbloqueado?';
+  let motivo = String(e.status ?? e.code ?? e.signal ?? 'erro desconhecido');
+  // No Windows, .cmd/.bat (o formato das CLIs instaladas pelo npm) não rodam sem shell desde o
+  // CVE-2024-27980 (EINVAL), e o PATH sem shell só acha .exe/.com (ENOENT): o código sozinho não ajuda.
+  if (process.platform === 'win32' && (e.code === 'EINVAL' || e.code === 'ENOENT')) {
+    motivo += '; no Windows, .cmd/.bat não rodam sem shell: aponte para o .exe ou use '
+      + 'powershell.exe -NoProfile -Command "..." (veja docs/clientes.md)';
+  }
+  const erro = String(e.stderr ?? '').replace(/\s+/g, ' ').trim();
+  if (!erro) return motivo;
+  return `${motivo}: ${erro.length > 200 ? `${erro.slice(0, 200)}…` : erro}`;
+}
+
+/**
  * Senha lida da saída de um comando (secret-tool, security, pass, op...). Assim ela fica no cofre do
  * sistema e não em texto puro no JSON do cliente MCP. Falha aqui é erro ANTES de qualquer login:
- * tentar com senha vazia queimaria uma das tentativas do AD.
+ * tentar com senha vazia ou errada queimaria uma das tentativas do AD.
  */
 function senhaDoComando(linha, variavel) {
   const [cmd, ...args] = dividirComando(linha);
   if (!cmd) throw new Error(`${variavel} está vazia.`);
   let saida;
   try {
-    saida = execFileSync(cmd, args, { encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'pipe', 'pipe'] });
+    // windowsHide: chamado por um cliente MCP sem console, o powershell.exe abriria uma janela piscando.
+    saida = execFileSync(cmd, args, {
+      encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+    });
   } catch (e) {
-    throw new Error(`${variavel}: o comando falhou (${e.status ?? e.code ?? e.message}) — não vou tentar o login.`);
+    throw new Error(`${variavel}: o comando falhou (${motivoDaFalha(e)}) — não vou tentar o login.`);
   }
-  const senha = saida.replace(/\r?\n$/, '');
-  if (!senha) throw new Error(`${variavel}: o comando terminou com a saída vazia — não vou tentar o login.`);
+  // Só a primeira linha: é a convenção do pass/gopass (as seguintes são metadados como "login:"), e
+  // mandar a saída inteira gastaria uma tentativa do AD com a senha errada.
+  const senha = saida.split(/\r?\n/, 1)[0];
+  if (!senha) throw new Error(`${variavel}: a primeira linha da saída do comando está vazia — não vou tentar o login.`);
+  // U+FFFD é byte que não era UTF-8: no Windows, o PowerShell 5.1 escreve no code page do console, e
+  // uma senha com acento chegaria trocada ao login.
+  if (senha.includes('�')) {
+    throw new Error(
+      `${variavel}: a saída do comando não é UTF-8 válido — não vou tentar o login. No PowerShell, `
+      + 'comece com [Console]::OutputEncoding = [Text.Encoding]::UTF8 (veja docs/clientes.md).',
+    );
+  }
   return senha;
 }
 
