@@ -181,3 +181,67 @@ test('cliente SOAP em cache só é reaproveitado com o cookie atual', async () =
   c._liveBase = async () => { throw new Error('recriando o cliente SOAP'); };
   await assert.rejects(() => c._soapClient('/webdesk/X?wsdl'), /recriando o cliente SOAP/);
 });
+
+// Fluig sem Fluig Identity, medido em homologação com cookie inválido: as rotas REST v2 respondem
+// 401, mas as antigas /ecm/api/rest/ecm/* (loadDataset, getEventList, createDataset, editDataset)
+// respondem 500 com o "Login failed" do Undertow — que precisa contar como sessão expirada.
+const LOGIN_FAILED_UNDERTOW = '{"content":"ERROR","message":{"message":"UT010031: Login failed",'
+  + '"detail":"UT010031: Login failed","type":"ERROR"}}';
+
+test('500 com o "Login failed" do Undertow (UT010031) conta como sessão expirada', () => {
+  assert.equal(sessaoExpirada(500, LOGIN_FAILED_UNDERTOW, 'application/json'), true);
+  // Um 500 qualquer, ou o código citado num 200 de dados, NÃO conta.
+  assert.equal(sessaoExpirada(500, '{"code":"javax.ejb.EJBException"}', 'application/json'), false);
+  assert.equal(sessaoExpirada(200, '{"obs":"UT010031: Login failed"}', 'application/json'), false);
+});
+
+test('rota antiga /ecm/api/rest com UT010031 loga de novo e repete uma vez', async () => {
+  const c = novoCliente();
+  const srv = servidorFalso(c, [
+    resposta(500, LOGIN_FAILED_UNDERTOW, { contentType: 'application/json' }),
+    resposta(200, '{"content":{"datasetId":"ds_x"}}', { contentType: 'application/json' }),
+  ]);
+
+  const r = await c._rest('/ecm/api/rest/ecm/dataset/loadDataset?datasetId=ds_x');
+  assert.deepEqual(r, { content: { datasetId: 'ds_x' } });
+  assert.equal(srv.logins, 2);
+});
+
+test('credencial recusada trava novos logins até o fluig_session_reset (protege o AD)', async () => {
+  const c = novoCliente();
+  let logins = 0;
+  c._fetch = async (path) => {
+    if (path === '/portal/api/servlet/login.do') {
+      logins++;
+      return resposta(200, '{}'); // 200 sem JSESSIONIDSSO = o servidor recusou a credencial
+    }
+    throw new Error(`chamada inesperada: ${path}`);
+  };
+
+  await assert.rejects(() => c.login(), /credencial recusada/);
+  // Cada chamada de ferramenta que viesse depois tentaria de novo: 3 chamadas = conta bloqueada.
+  await assert.rejects(() => c.login(), /já recusou a credencial/);
+  await assert.rejects(() => c._rest('/api/x'), /já recusou a credencial/);
+  assert.equal(logins, 1, 'só a primeira tentativa chega ao servidor');
+
+  // O reset é a liberação explícita: tenta UMA vez de novo.
+  await assert.rejects(() => c.sessionReset(), /credencial recusada/);
+  assert.equal(logins, 2);
+});
+
+test('falha de rede no login.do NÃO trava (não é recusa de credencial)', async () => {
+  const c = novoCliente();
+  c._bustIp = () => {};
+  let logins = 0;
+  c._fetch = async (path) => {
+    if (path === '/portal/api/servlet/login.do') {
+      logins++;
+      return resposta(403, '<html>FortiGuard Web Filter Violation</html>');
+    }
+    throw new Error(`chamada inesperada: ${path}`);
+  };
+
+  await assert.rejects(() => c.login(), /Falha no login \(HTTP 403\)/);
+  await assert.rejects(() => c.login(), /Falha no login \(HTTP 403\)/);
+  assert.equal(logins, 6, 'bloqueio de rede continua com as 3 tentativas por chamada');
+});
