@@ -44,6 +44,29 @@ async function retry(fn, tries = 4, baseMs = 400) {
   throw lastErr;
 }
 
+/** Cookie parado há mais que isto é revalidado com um ping antes de ser reaproveitado. */
+const SESSAO_REVALIDAR_MS = 20 * 60_000;
+
+/**
+ * True quando a resposta significa "sua sessão acabou", e não uma resposta de verdade.
+ *
+ * O Fluig puro responde 401 ou devolve a página de login; um Fluig atrás do Fluig Identity
+ * (SAML) responde 200 com um formulário que se auto-submete para `fluigidentity.com`. Nenhum
+ * dos dois é erro da aplicação: quem chamou deve logar de novo e repetir a requisição.
+ *
+ * Só uma PÁGINA HTML pode ser esse desvio. JSON, XML ou texto de dados nunca contam, mesmo
+ * que tragam essas palavras no conteúdo — senão uma gravação bem-sucedida seria repetida.
+ */
+export function sessaoExpirada(status, text = '', contentType = '') {
+  if (status === 401) return true;
+  const corpo = String(text || '').trimStart();
+  const ehHtml = /text\/html/i.test(contentType || '')
+    || /^<(!doctype\s+html|html|head|body|form)\b/i.test(corpo);
+  if (!ehHtml) return false;
+  return /<form\b[^>]*(SAMLRequest|receiveSSORequest|fluigidentity\.com|j_security_check)|name=["'](SAMLRequest|j_username)["']|<title>\s*Login/i
+    .test(corpo);
+}
+
 const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
 
 /** Testa conexão TCP a um IP:porta. Resolve true/false, nunca lança. */
@@ -96,6 +119,7 @@ export class FluigClient {
     this.companyId = cfg.companyId;
     this.userCode = cfg.userCode || cfg.user;
     this._cookie = null;
+    this._cookieAt = 0; // quando o cookie foi confirmado válido pela última vez
     this._soap = {};
     const u = new URL(this.host);
     this._proto = u.protocol;                       // 'http:' | 'https:'
@@ -208,8 +232,31 @@ export class FluigClient {
     );
   }
 
+  /**
+   * Devolve um cookie de sessão válido, logando se preciso.
+   *
+   * Chamadas simultâneas compartilham UM login em andamento: se várias requisições encontram a
+   * sessão expirada ao mesmo tempo, só uma tentativa chega ao servidor. Sem isso, uma senha
+   * desatualizada gastaria várias tentativas do AD de uma vez só.
+   */
   async login() {
-    if (this._cookie) return this._cookie;
+    if (this._cookie && Date.now() - this._cookieAt < SESSAO_REVALIDAR_MS) return this._cookie;
+    if (!this._loginEmAndamento) {
+      this._loginEmAndamento = this._obterSessao().finally(() => { this._loginEmAndamento = null; });
+    }
+    return this._loginEmAndamento;
+  }
+
+  async _obterSessao() {
+    if (this._cookie) {
+      // Parado tempo suficiente para ter expirado no servidor: confirma antes de reaproveitar.
+      const visto = this._cookie;
+      if (await this._sessaoViva(visto)) {
+        if (this._cookie === visto) this._cookieAt = Date.now();
+        return this._cookie || visto;
+      }
+      this._descartarSessao(visto);
+    }
     // Sem senha configurada, NÃO tentar: uma tentativa de login com credencial ausente/errada
     // gasta uma das 3 do lockoutThreshold do AD. Falhar aqui é de graça; falhar na rede custa
     // a conta do usuário (incidente de 22/08/2026).
@@ -239,7 +286,10 @@ export class FluigClient {
       lastStatus = r.status;
       const setCookies = typeof r.headers.getSetCookie === 'function' ? r.headers.getSetCookie() : [];
       this._cookie = setCookies.map(c => c.split(';')[0]).join('; ');
-      if (/JSESSIONIDSSO|jwt\.token/.test(this._cookie)) return this._cookie;
+      if (/JSESSIONIDSSO|jwt\.token/.test(this._cookie)) {
+        this._cookieAt = Date.now();
+        return this._cookie;
+      }
       this._cookie = null;
       // 200 sem cookie de SSO = o Fluig respondeu e RECUSOU a credencial. Abortar já:
       // insistir aqui queima tentativas do AD e bloqueia a conta do usuário.
@@ -255,24 +305,72 @@ export class FluigClient {
     throw new Error(`Falha no login (HTTP ${lastStatus}). Confira host/usuário/senha.`);
   }
 
+  /**
+   * Descarta a sessão em memória. Os clientes SOAP vão junto: cada um carrega o cookie antigo
+   * num header fixo e precisa ser recriado depois do novo login.
+   *
+   * Com `cookieVisto`, só descarta se a sessão atual ainda for a que expirou: se outra chamada
+   * já instalou uma sessão nova nesse meio-tempo, ela é preservada.
+   */
+  _descartarSessao(cookieVisto) {
+    if (cookieVisto !== undefined && this._cookie !== cookieVisto) return;
+    this._cookie = null;
+    this._cookieAt = 0;
+    this._soap = {};
+  }
+
+  /** Pergunta ao servidor se `cookie` ainda abre sessão (sem seguir redirecionamento). */
+  async _sessaoViva(cookie) {
+    try {
+      const r = await this._fetch('/portal/p/api/servlet/ping', {
+        method: 'POST',
+        headers: { Cookie: cookie },
+        redirect: 'manual',
+      });
+      return r.ok && (await r.text()).includes('pong');
+    } catch {
+      return false;
+    }
+  }
+
   async ping() {
-    const cookie = await this.login();
-    const r = await this._fetch('/portal/p/api/servlet/ping', { method: 'POST', headers: { Cookie: cookie } });
-    return r.ok && (await r.text()).includes('pong');
+    const headers = { Cookie: await this.login() };
+    for (let tentativa = 0; tentativa < 2; tentativa++) {
+      const r = await this._fetch('/portal/p/api/servlet/ping', { method: 'POST', headers });
+      const text = await r.text();
+      // Mesma regra do _rest(): sessão expirada → novo login e UMA repetição.
+      if (tentativa === 0 && sessaoExpirada(r.status, text, r.headers?.get?.('content-type'))) {
+        this._descartarSessao(headers.Cookie);
+        headers.Cookie = await this.login();
+        continue;
+      }
+      return r.ok && text.includes('pong');
+    }
+    return false;
   }
 
   async _rest(path, { method = 'GET', body, form = false } = {}) {
-    const cookie = await this.login();
-    const headers = { Cookie: cookie, Accept: 'application/json' };
+    const headers = { Cookie: await this.login(), Accept: 'application/json' };
     if (body) headers['Content-Type'] = form ? 'application/x-www-form-urlencoded' : 'application/json';
     // O IP "vivo" cacheado por _liveBase() às vezes cai numa rota que o IPS/Fortinet do
     // cliente bloqueia ("Web Filter Violation" / categoria "Unrated" — visto acessando
     // por IP direto em vez de hostname). Isso se disfarça de "dataset não encontrado" pra
     // quem só olha o JSON parse falhar. Detecta a assinatura do bloqueio e força reprova de
     // IP + retry antes de desistir — um IP diferente normalmente não está bloqueado.
+    // Sessão expirada (401, página de login ou o desvio SAML do Fluig Identity) não é bloqueio
+    // de rede: loga de novo e repete UMA vez. Se continuar expirada, devolve o _raw em vez de
+    // insistir — novo login em laço gastaria tentativas do AD.
+    let relogou = false;
     for (let attempt = 0; attempt < 3; attempt++) {
       const r = await this._fetch(path, { method, headers, body });
       const text = await r.text();
+      if (!relogou && sessaoExpirada(r.status, text, r.headers?.get?.('content-type'))) {
+        relogou = true;
+        this._descartarSessao(headers.Cookie);
+        headers.Cookie = await this.login();
+        attempt--; // a sessão expirada não conta contra as tentativas do bloqueio de rede
+        continue;
+      }
       try { return JSON.parse(text); } catch { /* segue pro fallback abaixo */ }
       const blocked = /FortiGuard|Web Filter Violation|Web Page Blocked/i.test(text);
       if (blocked && attempt < 2) { this._bustIp(); continue; }
@@ -292,8 +390,11 @@ export class FluigClient {
    * raiz, que estava em DOIS lugares. O SOAP tinha ficado de fora.
    */
   async _soapClient(wsdlPath) {
-    if (this._soap[wsdlPath]) return this._soap[wsdlPath];
+    // login() ANTES do cache: é ele que revalida um cookie parado. O cliente em cache só vale
+    // se foi criado com o cookie atual — cada cliente leva o cookie num header fixo.
     const cookie = await this.login();
+    const emCache = this._soap[wsdlPath];
+    if (emCache && emCache.cookie === cookie) return emCache.client;
     await this._liveBase();                    // só confirma que há caminho vivo
     const wsdlUrl = `${this.host}${wsdlPath}`;
     const client = await retry(() => soap.createClientAsync(wsdlUrl, {
@@ -303,7 +404,7 @@ export class FluigClient {
     }));
     client.addHttpHeader('Host', this._hostHeader);  // vhost nas chamadas SOAP
     client.addHttpHeader('Cookie', cookie);
-    this._soap[wsdlPath] = client;
+    this._soap[wsdlPath] = { client, cookie };
     return client;
   }
 
@@ -1024,12 +1125,18 @@ export class FluigClient {
    * Devolve { status, text, contentType }.
    */
   async _restRaw(path, { method = 'GET', body, contentType, accept } = {}) {
-    const cookie = await this.login();
-    const headers = { Cookie: cookie };
+    const headers = { Cookie: await this.login() };
     if (accept) headers.Accept = accept;
     if (body !== undefined && contentType) headers['Content-Type'] = contentType;
-    const r = await this._fetch(path, { method, headers, body });
-    const text = await r.text();
+    let r = await this._fetch(path, { method, headers, body });
+    let text = await r.text();
+    if (sessaoExpirada(r.status, text, r.headers.get('content-type'))) {
+      // Mesma regra do _rest(): novo login e UMA repetição.
+      this._descartarSessao(headers.Cookie);
+      headers.Cookie = await this.login();
+      r = await this._fetch(path, { method, headers, body });
+      text = await r.text();
+    }
     return { status: r.status, text, contentType: r.headers.get('content-type') || '' };
   }
 
@@ -1293,8 +1400,7 @@ export class FluigClient {
   /** P0#1 — Descarta a sessão em memória e força novo login na próxima chamada. */
   async sessionReset() {
     const antes = this._cookie ? this._cookie.split('; ').map(c => c.split('=')[0]) : [];
-    this._cookie = null;
-    this._soap = {};
+    this._descartarSessao();
     this._bustIp?.();
     const novo = await this.login();
     return {
