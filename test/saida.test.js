@@ -93,7 +93,9 @@ test('destino fora da pasta base é recusado (o conteúdo vem do servidor; não 
 test('nome que só começa com dois pontos é um nome comum, dentro da pasta', (t) => {
   const dir = pasta(t);
   assert.equal(gravarNaSaida('..config', 'x', { base: dir }), join(dir, '..config'));
-  assert.equal(gravarNaSaida('...', 'x', { base: dir }), join(dir, '...'));
+  // "..." termina em ponto: nome comum no Linux e no macOS, inválido no Windows (ver verificadores.test.js).
+  if (process.platform === 'win32') assert.throws(() => gravarNaSaida('...', 'x', { base: dir }), /inválido no Windows/);
+  else assert.equal(gravarNaSaida('...', 'x', { base: dir }), join(dir, '...'));
 });
 
 test('link de pasta (symlink ou junction) dentro da base não serve de saída', (t) => {
