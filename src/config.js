@@ -19,7 +19,58 @@
  *    Active Directory — o suficiente para bloquear a conta do usuário.
  */
 
+import { execFileSync } from 'node:child_process';
+
 const TRUTHY = /^(1|true|yes|on)$/i;
+
+/**
+ * Divide a linha de comando de FLUIG_PASS_CMD em argumentos, respeitando aspas simples e duplas.
+ * Sem shell de propósito: o comando roda com execFile, então `;`, `|` e `$()` são texto, não código.
+ */
+export function dividirComando(texto) {
+  const partes = [];
+  let atual = '';
+  let aspas = null;
+  let temParte = false;
+  for (const ch of String(texto).trim()) {
+    if (aspas) {
+      if (ch === aspas) aspas = null;
+      else atual += ch;
+    } else if (ch === '"' || ch === "'") {
+      aspas = ch;
+      temParte = true;
+    } else if (/\s/.test(ch)) {
+      if (temParte) partes.push(atual);
+      atual = '';
+      temParte = false;
+    } else {
+      atual += ch;
+      temParte = true;
+    }
+  }
+  if (aspas) throw new Error(`Comando com aspas sem fechar: ${texto}`);
+  if (temParte) partes.push(atual);
+  return partes;
+}
+
+/**
+ * Senha lida da saída de um comando (secret-tool, security, pass, op...). Assim ela fica no cofre do
+ * sistema e não em texto puro no JSON do cliente MCP. Falha aqui é erro ANTES de qualquer login:
+ * tentar com senha vazia queimaria uma das tentativas do AD.
+ */
+function senhaDoComando(linha, variavel) {
+  const [cmd, ...args] = dividirComando(linha);
+  if (!cmd) throw new Error(`${variavel} está vazia.`);
+  let saida;
+  try {
+    saida = execFileSync(cmd, args, { encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (e) {
+    throw new Error(`${variavel}: o comando falhou (${e.status ?? e.code ?? e.message}) — não vou tentar o login.`);
+  }
+  const senha = saida.replace(/\r?\n$/, '');
+  if (!senha) throw new Error(`${variavel}: o comando terminou com a saída vazia — não vou tentar o login.`);
+  return senha;
+}
 
 /** Valida e normaliza a URL base do portal. */
 function parseHost(valor, variavel) {
@@ -59,8 +110,14 @@ export function loadConfig(alvo = 'teste', env = process.env) {
   const vHost = isProd ? 'FLUIG_HOST_PROD' : 'FLUIG_HOST';
   const vUser = isProd ? 'FLUIG_USER_PROD' : 'FLUIG_USER';
   const vPass = isProd ? 'FLUIG_PASS_PROD' : 'FLUIG_PASS';
+  const vCmd = isProd ? 'FLUIG_PASS_CMD_PROD' : 'FLUIG_PASS_CMD';
+  const definida = (k) => !!env[k] && !!String(env[k]).trim();
 
-  const faltando = [vHost, vUser, vPass].filter((k) => !env[k] || !String(env[k]).trim());
+  if (definida(vPass) && definida(vCmd)) {
+    throw new Error(`Defina ${vPass} ou ${vCmd}, não os dois: com os dois, qual senha vale ficaria escondido.`);
+  }
+  const faltando = [vHost, vUser].filter((k) => !definida(k));
+  if (!definida(vPass) && !definida(vCmd)) faltando.push(`${vPass} (ou ${vCmd})`);
   if (faltando.length) {
     throw new Error(
       `Ambiente "${alvo}" não configurado — faltam: ${faltando.join(', ')}. `
@@ -75,7 +132,7 @@ export function loadConfig(alvo = 'teste', env = process.env) {
     isProd,
     host: parseHost(env[vHost], vHost),
     user,
-    pass: String(env[vPass]),
+    pass: definida(vCmd) ? senhaDoComando(env[vCmd], vCmd) : String(env[vPass]),
     companyId: Number(env[isProd ? 'FLUIG_COMPANY_PROD' : 'FLUIG_COMPANY'] ?? env.FLUIG_COMPANY ?? 1),
     // Vazio = descobrir pela sessão no primeiro login (ver FluigClient._descobrirUserCode). O código
     // do colaborador costuma ser a matrícula, diferente do login; usar o login no lugar dele faz as
