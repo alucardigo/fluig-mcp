@@ -67,3 +67,49 @@ test('chamadas simultâneas logo no início esperam a descoberta do código (sem
   await primeira;
   assert.equal(codigoNaSegunda, '000456');
 });
+
+test('user-info pendurado não trava o login: a descoberta tem tempo limite', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  const { c } = clienteSimulado(ENV, { code: '000123' });
+  const fetchOriginal = c._fetch;
+  c._fetch = (path, opts) => (path.endsWith('/user-info') ? new Promise(() => {}) : fetchOriginal(path, opts));
+  c._descobertaTimeoutMs = 20;
+  assert.equal(await c.login(), 'JSESSIONIDSSO=abc');
+  assert.equal(c.userCode, 'fulano');
+  assert.equal(c._userCodeOrigem, 'login');
+});
+
+test('falha na descoberta não é permanente: o próximo login (ex.: fluig_session_reset) tenta de novo', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  let falhar = true;
+  const { c, chamadas } = clienteSimulado(ENV, { code: '000123' });
+  const fetchOriginal = c._fetch;
+  c._fetch = async (path, opts) => {
+    if (path.endsWith('/user-info') && falhar) throw new Error('fetch failed');
+    return fetchOriginal(path, opts);
+  };
+  await c.login();
+  assert.equal(c.userCode, 'fulano');
+  falhar = false;
+  await c.sessionReset();
+  assert.equal(c.userCode, '000123');
+  assert.equal(c._userCodeOrigem, 'sessão');
+  assert.equal(chamadas.filter((p) => p.endsWith('login.do')).length, 2);
+});
+
+test('em produção a origem cita FLUIG_USERCODE_PROD', () => {
+  const c = new FluigClient(loadConfig('prod', {
+    FLUIG_HOST_PROD: 'https://fluig.exemplo.com.br', FLUIG_USER_PROD: 'fulano', FLUIG_PASS_PROD: 'x', FLUIG_USERCODE_PROD: '42',
+  }));
+  assert.equal(c._userCodeOrigem, 'FLUIG_USERCODE_PROD');
+});
+
+test('companyId -1: resposta sem tenantId é erro claro, e FLUIG_USERCODE configurado continua valendo', async () => {
+  const { c } = clienteSimulado({ ...ENV, FLUIG_COMPANY: '-1' }, {});
+  c._rest = async () => ({ _status: 500, _raw: '{"code":"javax.ejb.EJBException"}' });
+  await assert.rejects(() => c.resolveTenant(), /não consegui resolver o tenant/);
+
+  const { c: c2 } = clienteSimulado({ ...ENV, FLUIG_COMPANY: '-1', FLUIG_USERCODE: '999' }, {});
+  c2._rest = async () => ({ code: '000123', tenantId: 7 });
+  assert.deepEqual(await c2.resolveTenant(), { companyId: 7, colleagueId: '999' });
+});

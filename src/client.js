@@ -126,7 +126,9 @@ export class FluigClient {
     this.pass = cfg.pass;
     this.companyId = cfg.companyId;
     this.userCode = cfg.userCode || cfg.user;
-    this._userCodeOrigem = cfg.userCode ? 'FLUIG_USERCODE' : null; // null = ainda não descoberto
+    this._varUserCode = cfg.isProd ? 'FLUIG_USERCODE_PROD' : 'FLUIG_USERCODE';
+    this._userCodeOrigem = cfg.userCode ? this._varUserCode : null; // null = ainda não descoberto
+    this._descobertaTimeoutMs = 15_000;
     this._cookie = null;
     this._cookieAt = 0; // quando o cookie foi confirmado válido pela última vez
     this._soap = {};
@@ -266,7 +268,7 @@ export class FluigClient {
     if (this._cookie) {
       // Parado tempo suficiente para ter expirado no servidor: confirma antes de reaproveitar.
       const visto = this._cookie;
-      if (await this._sessaoViva(visto)) {
+      if ((await this._sessaoViva(visto)) !== false) {
         if (this._cookie === visto) this._cookieAt = Date.now();
         return this._cookie || visto;
       }
@@ -297,7 +299,7 @@ export class FluigClient {
     // login.do em si — um 403 aqui não significa credencial errada, então re-sonda o IP e
     // tenta de novo antes de reportar falha de autenticação (evita alarme falso).
     // ⚠️ NUNCA repetir tentativa quando o servidor RESPONDEU e apenas rejeitou a credencial.
-    // Em 22/08/2026 este laço de 3 tentativas BLOQUEOU a conta AD do do usuário
+    // Em 22/08/2026 este laço de 3 tentativas BLOQUEOU a conta AD do usuário
     // (lockoutThreshold do domínio = 3) porque a senha de PROD estava desatualizada.
     // Só re-tentar quando a resposta indica bloqueio de rede/IPS (403/5xx/sem resposta),
     // que é o cenário original para o qual o retry foi criado.
@@ -347,18 +349,27 @@ export class FluigClient {
     this._soap = {};
   }
 
-  /** Pergunta ao servidor se `cookie` ainda abre sessão (sem seguir redirecionamento). */
+  /**
+   * Pergunta ao servidor se `cookie` ainda abre sessão (sem seguir redirecionamento).
+   * true = viva · false = o servidor respondeu e a sessão acabou · null = não deu para saber (rede,
+   * 5xx, bloqueio de IPS). "Não sei" não é "morta": derrubar a sessão por isso gastaria um login à toa,
+   * e a própria requisição seguinte detecta a sessão expirada se for o caso.
+   */
   async _sessaoViva(cookie) {
+    let r;
     try {
-      const r = await this._fetch('/portal/p/api/servlet/ping', {
+      r = await this._fetch('/portal/p/api/servlet/ping', {
         method: 'POST',
         headers: { Cookie: cookie },
         redirect: 'manual',
       });
-      return r.ok && (await r.text()).includes('pong');
     } catch {
-      return false;
+      return null;
     }
+    const text = await r.text().catch(() => '');
+    if (r.ok && text.includes('pong')) return true;
+    if (r.status >= 500 || /FortiGuard|Web Filter Violation|Web Page Blocked/i.test(text)) return null;
+    return false;
   }
 
   /**
@@ -376,12 +387,14 @@ export class FluigClient {
   }
 
   async _buscarUserCode(cookie) {
-    if (this._userCodeOrigem) return;
+    if (this._userCodeOrigem && this._userCodeOrigem !== 'login') return;
     this._userCodeOrigem = 'login';
     try {
-      const r = await this._fetch('/authentication/api/v1/login/user-info', {
+      // Com tempo limite: o login inteiro espera por isto, e um user-info pendurado travaria todas as
+      // ferramentas do ambiente.
+      const r = await withTimeout(this._fetch('/authentication/api/v1/login/user-info', {
         headers: { Cookie: cookie, Accept: 'application/json' },
-      });
+      }), this._descobertaTimeoutMs);
       const code = r.ok ? (await r.json())?.code : undefined;
       if (code) {
         this.userCode = String(code);
@@ -389,9 +402,12 @@ export class FluigClient {
         return;
       }
     } catch { /* cai no aviso abaixo */ }
+    // Falha transitória não vira permanente: o próximo login (sessão expirada, fluig_session_reset)
+    // tenta de novo. Até lá vale o login.
+    this._descoberta = null;
     console.error(
       `fluig-mcp: não consegui descobrir o código do colaborador pela sessão; usando o login (${this.user}). `
-      + 'Se listas de formulário vierem vazias, defina FLUIG_USERCODE com o código do colaborador.'
+      + `Se listas de formulário vierem vazias, defina ${this._varUserCode} com o código do colaborador.`
     );
   }
 
@@ -877,7 +893,14 @@ export class FluigClient {
     // Antes ia por findUserByLogin?…&password=…: a senha na URL acaba em log de proxy e de servidor.
     // user-info resolve o mesmo pela sessão (tenantId e code medidos no Fluig 1.7.1).
     const u = await this._rest('/authentication/api/v1/login/user-info');
-    return { companyId: parseInt(u.tenantId, 10), colleagueId: String(u.code) };
+    const companyId = parseInt(u?.tenantId, 10);
+    if (!Number.isInteger(companyId) || !u?.code) {
+      throw new Error(`resolveTenant: não consegui resolver o tenant pela sessão (user-info HTTP ${u?._status ?? 200}). `
+        + 'Defina FLUIG_COMPANY com o código da empresa em vez de -1.');
+    }
+    // FLUIG_USERCODE configurado continua valendo, como no caminho com companyId fixo.
+    const colleagueId = this._userCodeOrigem === this._varUserCode ? this.userCode : String(u.code);
+    return { companyId, colleagueId };
   }
 
   /**
@@ -1196,6 +1219,11 @@ export class FluigClient {
       headers.Cookie = await this.login();
       r = await this._fetch(path, { method, headers, body });
       text = await r.text();
+      // Quem chama olha só o status: um 200 com a página de SSO viraria "ok" numa ferramenta de escrita.
+      if (sessaoExpirada(r.status, text, r.headers.get('content-type'))) {
+        throw new Error(`${method} ${path.split('?')[0]}: sessão expirada mesmo depois de um novo login. `
+          + 'Nada foi confirmado pelo servidor. Rode fluig_session_reset e confira a credencial.');
+      }
     }
     return { status: r.status, text, contentType: r.headers.get('content-type') || '' };
   }
@@ -1459,6 +1487,8 @@ export class FluigClient {
 
   /** P0#1 — Descarta a sessão em memória e força novo login na próxima chamada. */
   async sessionReset() {
+    // Uma revalidação em andamento devolveria o cookie antigo a quem pediu o reset: espera ela acabar.
+    await this._loginEmAndamento?.catch(() => {});
     const antes = this._cookie ? this._cookie.split('; ').map(c => c.split('=')[0]) : [];
     this._descartarSessao();
     this._loginRecusado = false; // liberação explícita de quem opera: UMA nova tentativa
