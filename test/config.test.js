@@ -75,6 +75,19 @@ test('ambientesConfigurados enxerga só o que tem host', () => {
   assert.deepEqual(ambientesConfigurados({ ...HOMOLOG, ...PROD }), ['teste', 'prod']);
 });
 
+test('ambiente com host e só cookie (sem senha) conta como configurado, e loadConfig aceita', () => {
+  // Tenant com MFA ou SSO: não existe FLUIG_PASS. Antes, o servidor encerrava na partida por isso.
+  const soCookie = { FLUIG_HOST: 'http://fluig.exemplo.com.br:8080', FLUIG_USER: 'fulano', FLUIG_COOKIE_CMD: 'cofre --cookie' };
+  assert.deepEqual(ambientesConfigurados(soCookie), ['teste']);
+  assert.doesNotThrow(() => loadConfig('teste', soCookie));
+  const soCookieProd = { FLUIG_HOST_PROD: 'https://fluig.exemplo.com.br:8443', FLUIG_USER_PROD: 'fulano', FLUIG_COOKIE_CMD_PROD: 'cofre --cookie' };
+  assert.deepEqual(ambientesConfigurados(soCookieProd), ['prod']);
+});
+
+test('host sem senha nem cookie não conta como configurado', () => {
+  assert.deepEqual(ambientesConfigurados({ FLUIG_HOST: 'http://fluig.exemplo.com.br:8080', FLUIG_USER: 'fulano' }), []);
+});
+
 test('FLUIG_READONLY aceita as formas usuais de "sim"', () => {
   for (const v of ['1', 'true', 'yes', 'on', 'TRUE']) {
     assert.equal(loadConfig('teste', { ...HOMOLOG, FLUIG_READONLY: v }).readOnly, true, v);
@@ -184,7 +197,8 @@ test('--help e a falta de ambiente citam FLUIG_PASS_CMD e FLUIG_SAIDA_DIR', asyn
   assert.match(help, /FLUIG_SAIDA_DIR/);
   assert.throws(
     () => execFileSync(process.execPath, [server], { encoding: 'utf8', timeout: 15000, env: limpo }),
-    (e) => /nenhum ambiente configurado/i.test(String(e.stderr)) && /FLUIG_PASS_CMD/.test(String(e.stderr)),
+    (e) => /nenhum ambiente configurado/i.test(String(e.stderr)) && /FLUIG_PASS_CMD/.test(String(e.stderr))
+      && /FLUIG_COOKIE_CMD/.test(String(e.stderr)),
   );
 });
 
