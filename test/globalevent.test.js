@@ -299,3 +299,17 @@ test('eventId vazio ou que não é texto é recusado antes de qualquer requisiç
     assert.equal(todas.length, 0, `saiu requisição para eventId ${JSON.stringify(eventId)}`);
   }
 });
+
+test('DELETE com sessão expirada não é reenviado depois do novo login (uma única escrita)', async () => {
+  const c = clienteOffline();
+  let deletes = 0;
+  c._fetch = async (path, opts = {}) => {
+    if (path === LOGIN) return LOGIN_OK;
+    if (path.startsWith('/authentication/')) return json(200, { code: 'fulano' });
+    if (path === LISTA) return json(200, [{ globalEventPK: { companyId: '1', eventId: 'ev-a' }, eventDescription: 'codigo' }]);
+    if (path.startsWith(ROTA)) { deletes++; return json(401, { message: 'sessao expirada' }); }
+    throw new Error(`rota inesperada: ${opts.method ?? 'GET'} ${path}`);
+  };
+  await assert.rejects(() => c.deleteGlobalEvent('ev-a', { confirm: true }), /não confirmou/);
+  assert.equal(deletes, 1, 'a exclusão não pode ser reenviada depois do novo login');
+});
