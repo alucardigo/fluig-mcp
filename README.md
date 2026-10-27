@@ -37,13 +37,13 @@ cada uma na marra.
 Requer **Node.js 20+**. Direto do [npm](https://www.npmjs.com/package/fluig-mcp), sem clonar nada:
 
 ```bash
-npx -y fluig-mcp@1.1.0 --list
+npx -y fluig-mcp@1.2.0 --list
 ```
 
 **Fixe a versão.** Sem ela, o `npx` busca a última publicada a cada subida, num processo que recebe a
 sua senha de produção; com ela, você atualiza quando decidir. Cada versão sai do CI deste repositório
 com [provenance](https://docs.npmjs.com/generating-provenance-statements) e só fica pública depois de
-aprovada com 2FA — confira com `npm view fluig-mcp@1.1.0 dist.attestations`. Também dá para instalar
+aprovada com 2FA — confira com `npm view fluig-mcp@1.2.0 dist.attestations`. Também dá para instalar
 pelo tarball anexado a cada [Release](https://github.com/alucardigo/fluig-mcp/releases) ou direto do
 GitHub (ver [docs/clientes.md](docs/clientes.md#de-onde-vem-o-pacote)).
 
