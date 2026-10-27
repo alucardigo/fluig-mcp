@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,8 +14,9 @@ const FONTE = readFileSync(new URL('../server.js', import.meta.url), 'utf8');
 /**
  * Servidor MCP de verdade, falando stdio, apontado para um Fluig falso que só conta requisições.
  * `fluig.requisicoes === 0` prova que a recusa aconteceu antes de qualquer coisa sair da máquina.
+ * `ambiente` acrescenta variáveis ao do servidor; valor null tira a variável.
  */
-async function conectar(t) {
+async function conectar(t, ambiente = {}) {
   const fluig = { requisicoes: 0 };
   const http = createServer((req, res) => {
     fluig.requisicoes++;
@@ -29,13 +30,10 @@ async function conectar(t) {
     [`FLUIG_HOST${sufixo}`]: host, [`FLUIG_USER${sufixo}`]: 'fulano',
     [`FLUIG_PASS${sufixo}`]: 'senha', [`FLUIG_USERCODE${sufixo}`]: 'fulano',
   });
+  const env = { ...credencial(''), ...credencial('_PROD'), FLUIG_SAIDA_DIR: saida, ...ambiente };
+  for (const [k, v] of Object.entries(env)) if (v === null) delete env[k];
   const mcp = new Client({ name: 'tools-test', version: '0' });
-  await mcp.connect(new StdioClientTransport({
-    command: process.execPath,
-    args: [SERVER],
-    env: { ...credencial(''), ...credencial('_PROD'), FLUIG_SAIDA_DIR: saida },
-    stderr: 'ignore',
-  }));
+  await mcp.connect(new StdioClientTransport({ command: process.execPath, args: [SERVER], env, stderr: 'ignore' }));
   t.after(async () => {
     await mcp.close();
     http.closeAllConnections();
@@ -116,6 +114,30 @@ test('em produção, as doze escritas sem confirm são recusadas antes de qualqu
     }
   }
   assert.equal(fluig.requisicoes, 0, 'nenhuma chamada recusada pode chegar ao servidor');
+});
+
+test('chamada recusada por confirm não roda o comando da senha (FLUIG_PASS_CMD_PROD)', async (t) => {
+  // O loadConfig executa o comando do cofre ao criar o cliente do ambiente. Uma escrita que vai ser
+  // recusada não pode disparar o cofre (prompt, efeito colateral, erro do comando no lugar do de confirm).
+  const dir = mkdtempSync(join(tmpdir(), 'tools-cofre-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const marca = join(dir, 'cofre-rodou');
+  const cofre = join(dir, 'cofre.mjs');
+  writeFileSync(cofre, `import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(marca)}, 'x');\nconsole.log('senha');\n`);
+  const { fluig, chamar } = await conectar(t, {
+    FLUIG_PASS_PROD: null, FLUIG_PASS_CMD_PROD: `"${process.execPath}" "${cofre}"`,
+  });
+
+  const args = CONFIRM_EM_PROD.fluig_dataset_save;
+  assert.match((await chamar('fluig_dataset_save', { env: 'prod', ...args })).texto, /exige confirm:true/);
+  assert.match((await chamar('fluig_dataset_delete', { env: 'prod', datasetId: 'ds_x', confirm: 'false' })).texto,
+    /confirm precisa ser booleano/);
+  assert.equal(existsSync(marca), false, 'o comando da senha rodou para uma chamada recusada');
+  assert.equal(fluig.requisicoes, 0);
+
+  // Prova de que o teste enxerga o cofre: a chamada confirmada o executa.
+  await chamar('fluig_dataset_save', { env: 'prod', ...args, confirm: true });
+  assert.equal(existsSync(marca), true);
 });
 
 test('em homologação as mesmas escritas passam sem confirm, e confirm:true libera a produção', async (t) => {

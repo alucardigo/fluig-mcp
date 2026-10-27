@@ -1325,19 +1325,21 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   }
   let alvo;
   try {
-    alvo = clienteDe(args.env);
+    // As recusas vêm ANTES de criar o cliente: o loadConfig executa o FLUIG_PASS_CMD, e uma chamada que
+    // vai ser recusada não pode disparar o cofre.
     if (tool.write) {
       // Os handlers liam `!!confirm`, e a string "false" contava como confirmação.
       if (args.confirm !== undefined && typeof args.confirm !== 'boolean') {
         throw new Error(`confirm precisa ser booleano (true ou false), não ${JSON.stringify(args.confirm)}.`);
       }
-      if (CONFIRM_EM_PROD.has(tool.name) && alvo.isProd && args.confirm !== true) {
+      if (CONFIRM_EM_PROD.has(tool.name) && args.env === 'prod' && args.confirm !== true) {
         throw new Error(`${tool.name} altera o servidor de PRODUÇÃO e exige confirm:true. `
           + 'Em homologação (env="teste") passa direto.');
       }
       // Texto que saiu cortado de uma leitura (ver src/saida.js) não volta para o Fluig.
       recusarCortado(args, '');
     }
+    alvo = clienteDe(args.env);
   } catch (e) {
     return { content: [{ type: 'text', text: 'ERRO: ' + (e?.message || e) }], isError: true };
   }
