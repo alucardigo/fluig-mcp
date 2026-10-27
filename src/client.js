@@ -129,6 +129,16 @@ function motivoDoServidor(r) {
   return JSON.stringify(r);
 }
 
+/**
+ * Forma comparável de uma lista de eventos globais. A ordem em que o servidor devolve os eventos não conta;
+ * o conteúdo inteiro conta, porque o save regrava cada objeto como veio, e uma edição em qualquer um deles
+ * seria desfeita.
+ */
+function assinaturaDaLista(lista) {
+  const ordenada = [...lista].sort((a, b) => String(a.globalEventPK?.eventId).localeCompare(String(b.globalEventPK?.eventId)));
+  return JSON.stringify(ordenada);
+}
+
 const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
 
 /**
@@ -841,6 +851,17 @@ export class FluigClient {
       const dto = { globalEventPK: { companyId: this.companyId, eventId }, eventDescription: code };
       const idx = arr.findIndex(e => e.globalEventPK && e.globalEventPK.eventId === eventId);
       if (idx === -1) arr.push(dto); else arr[idx] = dto;
+      // Relê a lista logo antes do POST. Se outro escritor mudou algum evento desde a leitura inicial, gravar
+      // esta cópia desfaria a mudança. A janela é reduzida, não eliminada: o Fluig não oferece token de versão
+      // para a lista, então uma escrita externa que caia entre esta releitura e o POST ainda passa.
+      const agora = await this.listGlobalEvents();
+      if (!Array.isArray(agora)) {
+        throw new Error(`saveGlobalEvent: não consegui reler a lista antes de gravar (${motivoDoServidor(agora)}). `
+          + 'Nada foi gravado.');
+      }
+      if (assinaturaDaLista(agora) !== assinaturaDaLista(list)) {
+        throw new Error('saveGlobalEvent: a lista mudou durante a gravação; nada foi gravado, tente de novo.');
+      }
       // Pelo _rest, para recuperar a sessão: sem ela esta rota antiga devolve 500 com UT010031.
       return this._rest('/ecm/api/rest/ecm/globalevent/saveEventList', {
         method: 'POST', form: true, body: JSON.stringify(arr),

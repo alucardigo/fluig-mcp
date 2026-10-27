@@ -313,3 +313,63 @@ test('DELETE com sessão expirada não é reenviado depois do novo login (uma ú
   await assert.rejects(() => c.deleteGlobalEvent('ev-a', { confirm: true }), /não confirmou/);
   assert.equal(deletes, 1, 'a exclusão não pode ser reenviada depois do novo login');
 });
+
+/** Evento no formato que o Fluig devolve na lista de eventos globais. */
+const evento = (eventId, eventDescription) => ({ globalEventPK: { companyId: 1, eventId }, eventDescription });
+
+/**
+ * Cliente cuja lista é a sequência `listas`, uma por leitura. Uma leitura além do fim repete a última. Os POST de
+ * gravação ficam em `salvos`, para mostrar que nenhum saiu.
+ */
+function clienteComLeiturasEmSequencia(listas) {
+  const c = clienteOffline();
+  const salvos = [];
+  let leituras = 0;
+  c._fetch = async (path, opts = {}) => {
+    if (path === LOGIN) return LOGIN_OK;
+    if (path.startsWith('/authentication/')) return json(200, { code: 'fulano' });
+    if (path === LISTA) {
+      const i = Math.min(leituras, listas.length - 1);
+      leituras++;
+      return listas[i] instanceof Error ? json(500, { message: { message: 'falha de leitura' } }) : json(200, listas[i]);
+    }
+    if (path === SALVAR) {
+      salvos.push(opts.body);
+      return json(200, { content: 'OK' });
+    }
+    throw new Error(`rota inesperada no teste: ${opts.method ?? 'GET'} ${path}`);
+  };
+  return { c, salvos: () => salvos.slice(), leituras: () => leituras };
+}
+
+test('saveGlobalEvent: se a lista muda entre a leitura e a releitura antes do POST, nada é gravado', async () => {
+  const srv = clienteComLeiturasEmSequencia([
+    [evento('A', 'codigo-a')],
+    [evento('A', 'codigo-a'), evento('B', 'codigo-b')], // outro escritor gravou B entre as duas leituras
+  ]);
+  await assert.rejects(() => srv.c.saveGlobalEvent('C', 'codigo-c'),
+    /a lista mudou durante a gravação; nada foi gravado, tente de novo/);
+  assert.equal(srv.salvos().length, 0, 'nenhum POST pode sair com a lista que já mudou');
+});
+
+test('saveGlobalEvent: mudança no código de um evento que já existia também conta como lista mudada', async () => {
+  const srv = clienteComLeiturasEmSequencia([
+    [evento('A', 'codigo-a'), evento('B', 'codigo-b')],
+    [evento('A', 'codigo-a'), evento('B', 'codigo-b-editado')],
+  ]);
+  await assert.rejects(() => srv.c.saveGlobalEvent('C', 'codigo-c'), /a lista mudou durante a gravação/);
+  assert.equal(srv.salvos().length, 0, 'gravar a cópia antiga de B desfaria a edição de outro escritor');
+});
+
+test('saveGlobalEvent: releitura que não pode ser feita não grava, porque a igualdade não se confirmou', async () => {
+  const srv = clienteComLeiturasEmSequencia([[evento('A', 'codigo-a')], new Error('falha de leitura')]);
+  await assert.rejects(() => srv.c.saveGlobalEvent('C', 'codigo-c'), /não consegui reler a lista antes de gravar/);
+  assert.equal(srv.salvos().length, 0);
+});
+
+test('saveGlobalEvent: releitura igual à primeira segue para a gravação normal', async () => {
+  const srv = servidorDeEventos([['X', 'codigo-x']]);
+  await srv.c.saveGlobalEvent('Y', 'codigo-y');
+  assert.deepEqual(srv.ids(), ['X', 'Y']);
+  assert.equal(srv.codigo('Y'), 'codigo-y');
+});
