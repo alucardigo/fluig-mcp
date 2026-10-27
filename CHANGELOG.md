@@ -3,6 +3,19 @@
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/);
 versionamento [SemVer](https://semver.org/lang/pt-BR/).
 
+## [Não lançada]
+
+### Adicionado
+
+- `fluig_version` mostra a versão do servidor Fluig (`servidorVersao`). Se o servidor não responder,
+  o diagnóstico continua e traz o motivo em `servidorVersaoErro`.
+- `fluig_globalevent_delete` exclui **um** evento global por chamada, pelo id. Exige `confirm: true`
+  em qualquer ambiente, porque a exclusão é irreversível.
+- `FLUIG_COOKIE_CMD` e `FLUIG_COOKIE_CMD_PROD`: sessão só por cookie, sem senha, para tenant com MFA
+  ou SSO. Um comando imprime o cookie de sessão (`JSESSIONIDSSO` ou `jwt.token`); o cliente nunca chama
+  `login.do` e não cai para senha quando o cookie é recusado. As operações SOAP ficam indisponíveis
+  nesse modo ([detalhes no README](README.md#tenant-com-mfa-ou-sso-cookie-de-sessão)).
+
 ## [1.2.0] — 2026-10-27
 
 Os dois pontos que a revisão da 1.1.0 ([issue #3](https://github.com/alucardigo/fluig-mcp/issues/3))

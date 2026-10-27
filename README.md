@@ -110,6 +110,9 @@ se ele pedir desbloqueio, é a hora). Trocou a senha no cofre? Reinicie o client
 No GitHub Copilot (VS Code) não precisa disso: o próprio VS Code pede a senha e a guarda (exemplo em
 [docs/clientes.md](docs/clientes.md#github-copilot-vs-code)).
 
+Se o tenant exige MFA ou SSO, a senha do cofre não entra no login: nesse caso, use o
+[cookie de sessão](#tenant-com-mfa-ou-sso-cookie-de-sessão), que dispensa a senha.
+
 ### Tenant com MFA ou SSO: cookie de sessão
 
 Quando o login com usuário e senha não serve (MFA ou SSO), `FLUIG_COOKIE_CMD` (e `FLUIG_COOKIE_CMD_PROD`)
