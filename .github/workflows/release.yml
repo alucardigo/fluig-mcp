@@ -8,9 +8,9 @@ name: Release
 # 1. o tarball do npm anexado ao Release, para quem quer instalar sem registro nenhum;
 # 2. o pacote @alucardigo/fluig-mcp no GitHub Packages, com o token do próprio Actions;
 # 3. o pacote fluig-mcp no npmjs.com, com provenance (atestado de qual commit e qual workflow o
-#    geraram). Só roda com a variável de repositório NPM_PUBLICAR=true, porque exige uma conta no
-#    npm: trusted publishing (OIDC, configurado em npmjs.com → fluig-mcp → Settings, apontando para
-#    este arquivo) ou um segredo NPM_TOKEN granular, só com publish deste pacote.
+#    geraram), por staged publishing: o CI prepara e um mantenedor aprova com 2FA. Só roda com a
+#    variável de repositório NPM_PUBLICAR=true e o segredo NPM_TOKEN (granular, SEM bypass de 2FA:
+#    preparar não exige 2FA).
 
 on:
   release:
@@ -130,7 +130,16 @@ jobs:
         with:
           node-version: '24'
           registry-url: https://registry.npmjs.org
-      - name: Publica, se a versão ainda não estiver lá
+      # `npm stage` existe a partir do npm 11.15.
+      - name: npm com suporte a staged publishing
+        run: |
+          if ! npm stage --help >/dev/null 2>&1; then npm install -g npm@11.16.0; fi
+          npm --version
+      # Staged publishing: o CI só PREPARA a versão; ela fica pública depois que um mantenedor aprova
+      # com 2FA (aba Staged Packages do npmjs.com, ou `npm stage approve <id>`). Token que dispensa
+      # 2FA perde a publicação direta em janeiro de 2027, e um token roubado daqui não publica nada
+      # sozinho.
+      - name: Prepara a versão para aprovação, se ainda não estiver no npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           VERSAO: ${{ needs.verificar.outputs.versao }}
@@ -138,5 +147,15 @@ jobs:
           if npm view "fluig-mcp@$VERSAO" version >/dev/null 2>&1; then
             echo "fluig-mcp@$VERSAO já está no npm"
           else
-            npm publish --provenance --access public
+            npm stage publish --provenance --access public | tee stage.txt
+            {
+              echo "### fluig-mcp@$VERSAO aguardando aprovação no npm"
+              echo
+              echo "Aprove com 2FA em https://www.npmjs.com/settings/~/packages/staged (aba Staged Packages)"
+              echo "ou com \`npm stage approve <id>\`. Saída do npm:"
+              echo
+              echo '```'
+              cat stage.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
