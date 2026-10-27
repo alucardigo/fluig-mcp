@@ -9,12 +9,20 @@ versionamento [SemVer](https://semver.org/lang/pt-BR/).
 
 - `fluig_version` mostra a versão do servidor Fluig (`servidorVersao`). Se o servidor não responder,
   o diagnóstico continua e traz o motivo em `servidorVersaoErro`.
-- `fluig_globalevent_delete` exclui **um** evento global por chamada, pelo id. Exige `confirm: true`
-  em qualquer ambiente, porque a exclusão é irreversível.
+- `fluig_globalevent_delete` exclui **um** evento global por chamada, pelo id. Sem `confirm: true` é
+  dry-run: mostra o código que seria apagado e não apaga nada. Com `confirm: true` apaga, e a resposta
+  traz o código apagado (`eventoApagado`), para restaurar com `fluig_globalevent_save`.
 - `FLUIG_COOKIE_CMD` e `FLUIG_COOKIE_CMD_PROD`: sessão só por cookie, sem senha, para tenant com MFA
   ou SSO. Um comando imprime o cookie de sessão (`JSESSIONIDSSO` ou `jwt.token`); o cliente nunca chama
   `login.do` e não cai para senha quando o cookie é recusado. As operações SOAP ficam indisponíveis
   nesse modo ([detalhes no README](README.md#tenant-com-mfa-ou-sso-cookie-de-sessão)).
+- `FLUIG_COOKIE_TIMEOUT_MS`: espera máxima do comando de cookie, padrão de 120 s (tempo para aprovar o MFA).
+
+### Corrigido
+
+- Escritas de eventos globais (`fluig_globalevent_save` e `fluig_globalevent_delete`) rodam uma de cada vez.
+  Dois saves simultâneos podiam perder um ao outro, e um save que lia a lista antes de um delete podia
+  trazer de volta o evento apagado.
 
 ## [1.2.0] — 2026-10-27
 

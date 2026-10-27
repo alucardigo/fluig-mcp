@@ -69,11 +69,99 @@ test('cookie configurado não exige senha, e o cliente não recebe senha', () =>
   assert.equal(cfg.cookieCmd, imprime('JSESSIONIDSSO=a'));
 });
 
-test('a saída inteira conta: linhas em branco saem e as demais viram um cookie só', () => {
+test('a saída inteira conta: linhas em branco saem e as demais viram um cookie só', async () => {
   assert.equal(
-    cookieDoComando(imprime('\\n  JSESSIONIDSSO=abc\\r\\njwt.token=xyz\\n'), 'FLUIG_COOKIE_CMD'),
+    await cookieDoComando(imprime('\\n  JSESSIONIDSSO=abc\\r\\njwt.token=xyz\\n'), 'FLUIG_COOKIE_CMD'),
     'JSESSIONIDSSO=abc; jwt.token=xyz',
   );
+});
+
+test('CR ou NUL solto antes do cookie na mesma linha não gruda no cookie', async () => {
+  // Um progresso ("Autenticando") impresso sem quebra de linha colava no nome do cookie: o undici recusava o
+  // header e a mensagem de erro levava o valor do cookie.
+  assert.equal(await cookieDoComando(imprime('Autenticando\\rJSESSIONIDSSO=abc'), 'FLUIG_COOKIE_CMD'), 'JSESSIONIDSSO=abc');
+  assert.equal(await cookieDoComando(imprime('Autenticando\\0JSESSIONIDSSO=abc'), 'FLUIG_COOKIE_CMD'), 'JSESSIONIDSSO=abc');
+});
+
+test('progresso colado ao cookie não aparece em versionInfo()', async () => {
+  const { c } = clienteFalso({ FLUIG_COOKIE_CMD: imprime('Autenticando\\rJSESSIONIDSSO=abc-secreto') });
+  const info = await c.versionInfo();
+  assert.deepEqual(info.cookies, ['JSESSIONIDSSO']);
+  assert.doesNotMatch(JSON.stringify(info), /Autenticando|abc-secreto/);
+});
+
+test('header recusado pelo fetch não leva o valor do cookie para a mensagem de erro', async () => {
+  // Defesa em profundidade: se uma saída escapar da limpeza, o erro do undici ainda não pode vazar o valor.
+  const c = new FluigClient(loadConfig('teste', { ...BASE, FLUIG_COOKIE_CMD: imprime('JSESSIONIDSSO=a') }));
+  c._liveBase = async () => ({ ip: '127.0.0.1' });
+  await assert.rejects(() => c._fetch('/x', { headers: { Cookie: 'JSESSIONIDSSO=valor-secreto\0' } }), (e) =>
+    /invalid header value/.test(e.message) && !/valor-secreto/.test(e.message));
+});
+
+test('falha de rede na consulta da versão não leva o cookie para servidorVersaoErro', async () => {
+  const { c } = clienteFalso({ FLUIG_COOKIE_CMD: imprime('JSESSIONIDSSO=abc123-secreto') }, (p, o) => {
+    if (p.includes('studioWorkflowRest')) throw new Error(`conexão recusada com ${o.headers.Cookie}`);
+    return SAUDAVEL(p, o);
+  });
+  const info = await c.versionInfo();
+  assert.equal(info.servidorVersao, null);
+  assert.match(info.servidorVersaoErro, /consulta falhou/);
+  assert.doesNotMatch(JSON.stringify(info), /abc123-secreto/);
+});
+
+test('comando de cookie que falha não roda de novo nesta sessão: só o reset libera outra execução', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fluig-cookie-'));
+  try {
+    const arquivo = join(dir, 'execucoes.txt');
+    const comandoQueFalha = `${NODE} -e "require('fs').appendFileSync(process.argv[1], 'x\\n'); process.exit(3)" "${arquivo}"`;
+    const { c, logins } = clienteFalso({ FLUIG_COOKIE_CMD: comandoQueFalha });
+    await assert.rejects(() => c.login(), /FLUIG_COOKIE_CMD: o comando falhou/);
+    // Cada execução pode disparar outro desafio de MFA: a segunda chamada não pode rodar o comando.
+    await assert.rejects(() => c.login(), /fluig_session_reset/);
+    assert.equal(execucoes(arquivo), 1, 'o comando rodou de novo sem o reset');
+
+    await assert.rejects(() => c.sessionReset(), /FLUIG_COOKIE_CMD: o comando falhou/);
+    assert.equal(execucoes(arquivo), 2, 'o reset deveria liberar UMA execução');
+    assert.equal(logins(), 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('o comando do cookie roda sem travar o event loop: outras tarefas andam enquanto ele espera', async () => {
+  // Com execFileSync, o servidor MCP inteiro ficava parado enquanto o comando rodava.
+  const { c } = clienteFalso({
+    FLUIG_COOKIE_CMD: `${NODE} -e "setTimeout(() => process.stdout.write('JSESSIONIDSSO=a'), 400)"`,
+  });
+  let ticks = 0;
+  const relogio = setInterval(() => { ticks++; }, 10);
+  try {
+    await c.login();
+  } finally {
+    clearInterval(relogio);
+  }
+  assert.ok(ticks >= 5, `o event loop ficou parado enquanto o comando rodava (ticks=${ticks})`);
+});
+
+test('FLUIG_COOKIE_TIMEOUT_MS limita a espera do comando, e a mensagem diz o limite', async () => {
+  const { c } = clienteFalso({
+    FLUIG_COOKIE_CMD: `${NODE} -e "setTimeout(() => process.stdout.write('JSESSIONIDSSO=a'), 3000)"`,
+    FLUIG_COOKIE_TIMEOUT_MS: '200',
+  });
+  await assert.rejects(() => c.login(), /FLUIG_COOKIE_CMD: o comando falhou \(não respondeu em 200 ms/);
+});
+
+test('FLUIG_COOKIE_TIMEOUT_MS: padrão de 2 minutos, e valor que não é inteiro positivo é erro', () => {
+  const cmd = imprime('JSESSIONIDSSO=a');
+  assert.equal(loadConfig('teste', { ...BASE, FLUIG_COOKIE_CMD: cmd }).cookieTimeoutMs, 120000);
+  assert.equal(loadConfig('teste', { ...BASE, FLUIG_COOKIE_CMD: cmd, FLUIG_COOKIE_TIMEOUT_MS: '5000' }).cookieTimeoutMs, 5000);
+  for (const ruim of ['abc', '0', '-5', '1.5']) {
+    assert.throws(
+      () => loadConfig('teste', { ...BASE, FLUIG_COOKIE_CMD: cmd, FLUIG_COOKIE_TIMEOUT_MS: ruim }),
+      /FLUIG_COOKIE_TIMEOUT_MS/,
+      ruim,
+    );
+  }
 });
 
 test('saída sem cookie de sessão é erro, e a saída não aparece na mensagem', async () => {
@@ -97,8 +185,8 @@ test('comando que falha não cai para login.do e não manda requisição nenhuma
   assert.equal(chamadas.length, 0);
 });
 
-test('o stderr de um comando que falha não expõe o cookie', () => {
-  assert.throws(
+test('o stderr de um comando que falha não expõe o cookie', async () => {
+  await assert.rejects(
     () => cookieDoComando(`${NODE} -e "process.stderr.write('JSESSIONIDSSO=vazou'); process.exit(1)"`, 'FLUIG_COOKIE_CMD'),
     (e) => /FLUIG_COOKIE_CMD/.test(e.message) && !/vazou/.test(e.message),
   );

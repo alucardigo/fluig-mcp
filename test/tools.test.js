@@ -17,9 +17,10 @@ const FONTE = readFileSync(new URL('../server.js', import.meta.url), 'utf8');
  * `ambiente` acrescenta variáveis ao do servidor; valor null tira a variável.
  */
 async function conectar(t, ambiente = {}) {
-  const fluig = { requisicoes: 0 };
+  const fluig = { requisicoes: 0, exclusoes: 0 };
   const http = createServer((req, res) => {
     fluig.requisicoes++;
+    if (req.method === 'DELETE') fluig.exclusoes++;
     res.writeHead(500, { 'Content-Type': 'text/plain' });
     res.end('Fluig falso');
   });
@@ -152,18 +153,19 @@ test('em homologação as mesmas escritas passam sem confirm, e confirm:true lib
   assert.ok(fluig.requisicoes > antes, 'com confirm:true a chamada de produção segue para o servidor');
 });
 
-test('apagar evento global exige confirm:true em homologação e produção, antes de qualquer requisição', async (t) => {
-  // Diferente das escritas do ciclo de desenvolvimento, apagar não passa direto em homologação: a
-  // exclusão leva o código do evento junto, e o CONTRIBUTING manda exigir confirm em qualquer ambiente.
+test('apagar evento global sem confirm é dry-run: nenhum DELETE sai, em homologação nem em produção', async (t) => {
+  // Apagar leva o código do evento junto. Sem confirm:true a ferramenta só lê e mostra o que seria apagado,
+  // como fluig_process_convert_instances. O fake aqui não serve a leitura, então o retorno pode ser erro:
+  // o que importa é que nenhum DELETE chegue ao Fluig. O formato do dry-run é coberto em test/globalevent.test.js.
   const { fluig, chamar } = await conectar(t);
   for (const env of ['teste', 'prod']) {
     for (const confirm of [undefined, false]) {
       const r = await chamar('fluig_globalevent_delete', { env, eventId: 'afterProcessCreate', confirm });
-      assert.ok(r.erro, `${env} confirm=${confirm}`);
-      assert.match(r.texto, /fluig_globalevent_delete .*exige confirm:true/, `${env} confirm=${confirm}`);
+      // O despacho não recusa mais antes do handler: quem decide entre dry-run e exclusão é a ferramenta.
+      assert.doesNotMatch(r.texto, /exige confirm/, `${env} confirm=${confirm}: o despacho recusou antes do dry-run`);
     }
   }
-  assert.equal(fluig.requisicoes, 0, 'nenhuma exclusão sem confirm pode chegar ao servidor');
+  assert.equal(fluig.exclusoes, 0, 'uma exclusão sem confirm chegou ao servidor');
 
   await chamar('fluig_globalevent_delete', { env: 'teste', eventId: 'afterProcessCreate', confirm: true });
   assert.ok(fluig.requisicoes > 0, 'com confirm:true a exclusão segue para o servidor');

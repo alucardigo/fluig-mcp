@@ -73,6 +73,7 @@ servidor de outra pessoa.
 | `FLUIG_HOST_PROD` · `FLUIG_USER_PROD` · `FLUIG_PASS_PROD` (ou `FLUIG_PASS_CMD_PROD`) | produção (`env: "prod"`) | para usar produção |
 | `FLUIG_PASS_CMD` · `FLUIG_PASS_CMD_PROD` | no lugar da senha: comando que a imprime (cofre do sistema) | não |
 | `FLUIG_COOKIE_CMD` · `FLUIG_COOKIE_CMD_PROD` | no lugar da senha, para tenant com MFA ou SSO: comando que imprime o cookie de sessão (sem `login.do`) | não |
+| `FLUIG_COOKIE_TIMEOUT_MS` | espera máxima do comando de cookie, em milissegundos (padrão `120000`, o tempo para aprovar o MFA); vale para os dois ambientes | não |
 | `FLUIG_USERCODE` · `FLUIG_USERCODE_PROD` | código do colaborador; sem ele, é descoberto pela sessão | não |
 | `FLUIG_SAIDA_DIR` | pasta onde `destino` grava e de onde sai o arquivo que sobe ao Fluig (`caminhoLocal`, `zipPath`, `xmlPath`, `svgPath`); padrão `~/fluig-mcp-saida`, fora dela é recusado | não |
 | `FLUIG_READONLY=1` | ambos | não — mas leia [Segurança](#segurança) |
@@ -122,7 +123,10 @@ shell, com as mesmas regras de aspas do `FLUIG_PASS_CMD`, e a saída inteira é 
 - não há senha, e o cliente **nunca** chama `login.do` nem tenta a senha, nem quando o cookie falha. Cada
   tentativa de senha recusada pelo servidor conta contra o bloqueio da conta;
 - cookie recusado dá erro com a instrução de gerar outro e rodar `fluig_session_reset`. O comando não roda
-  de novo sozinho na mesma chamada: o reset é o que libera a próxima execução;
+  de novo sozinho: o reset é o que libera a próxima execução. Vale também quando o próprio comando falha
+  (cofre bloqueado, MFA recusado, saída sem cookie), porque cada execução pode disparar outro desafio;
+- o comando não trava o servidor: enquanto ele espera o cofre ou a aprovação do MFA, as outras ferramentas
+  continuam. A espera máxima é `FLUIG_COOKIE_TIMEOUT_MS` (padrão 120 s), e o estouro aparece na mensagem;
 - `fluig_version` mostra só os nomes dos cookies, nunca o valor;
 - as operações que falam com os serviços SOAP do Fluig (`ECMDatasetService`, `ECMCardIndexService`,
   `WorkflowEngineService` e `TokenService`) ficam indisponíveis e são recusadas antes de qualquer chamada,
@@ -184,8 +188,10 @@ FLUIG_READONLY=1 node server.js --list   # 60 ferramentas, nenhuma de escrita
 
 **Confirmação explícita.** Toda ferramenta de escrita declara `confirm`. As estruturais e
 destrutivas o exigem em qualquer ambiente, e as destrutivas (`fluig_process_convert_instances`,
-`fluig_rm_save_record`) devolvem um **dry-run** com o plano antes de executar qualquer coisa. As
-do ciclo de desenvolvimento exigem `confirm: true` só em produção e passam direto em homologação:
+`fluig_rm_save_record`, `fluig_globalevent_delete`) devolvem um **dry-run** com o plano antes de executar
+qualquer coisa: sem `confirm: true`, nada é alterado.
+
+As do ciclo de desenvolvimento exigem `confirm: true` só em produção e passam direto em homologação:
 `fluig_dataset_save`, `fluig_dataset_enable`, `fluig_globalevent_save`,
 `fluig_workflow_events_update`, `fluig_form_save`, `fluig_process_start`, `fluig_process_move`,
 `fluig_process_take`, `fluig_rest_post`, `fluig_job_add`, `fluig_job_delete` e `fluig_job_run`.
