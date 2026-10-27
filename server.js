@@ -1303,8 +1303,9 @@ if (!configurados.length) {
   console.error(
     'fluig-mcp: nenhum ambiente configurado. Defina FLUIG_HOST/FLUIG_USER/FLUIG_PASS '
     + '(homologação) e/ou FLUIG_HOST_PROD/FLUIG_USER_PROD/FLUIG_PASS_PROD (produção); no lugar '
-    + 'da senha, FLUIG_PASS_CMD/FLUIG_PASS_CMD_PROD lê de um comando (cofre do sistema). '
-    + 'Veja .env.example. Rode --list para inspecionar as ferramentas sem credencial.',
+    + 'da senha, FLUIG_PASS_CMD/FLUIG_PASS_CMD_PROD lê de um comando (cofre do sistema); com MFA ou SSO, '
+    + 'FLUIG_COOKIE_CMD/FLUIG_COOKIE_CMD_PROD. Veja .env.example. Rode --list para inspecionar as '
+    + 'ferramentas sem credencial.',
   );
   process.exit(1);
 }

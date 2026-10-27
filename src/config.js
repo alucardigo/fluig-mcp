@@ -31,6 +31,9 @@ import { execFile, execFileSync } from 'node:child_process';
 
 const TRUTHY = /^(1|true|yes|on)$/i;
 
+/** Variável definida e não vazia: só espaço conta como vazio. */
+const preenchida = (env, k) => !!env[k] && !!String(env[k]).trim();
+
 /** Espera máxima do comando da senha. Ele roda uma vez, no carregamento, então o tempo é fixo. */
 const TEMPO_SENHA_MS = 15_000;
 
@@ -211,11 +214,17 @@ function parseHost(valor, variavel) {
   return host;
 }
 
-/** Quais ambientes têm host configurado. Usado para validar antes de subir o servidor. */
+/**
+ * Quais ambientes estão configurados para subir o servidor: têm host e alguma forma de autenticar, que é
+ * senha (FLUIG_PASS ou FLUIG_PASS_CMD) ou comando de cookie (FLUIG_COOKIE_CMD). Usuário e o resto ficam para
+ * loadConfig, que aponta o que falta na primeira chamada.
+ */
 export function ambientesConfigurados(env = process.env) {
+  const temAutenticacao = (sufixo) => ['FLUIG_PASS', 'FLUIG_PASS_CMD', 'FLUIG_COOKIE_CMD']
+    .some((k) => preenchida(env, k + sufixo));
   const out = [];
-  if (env.FLUIG_HOST) out.push('teste');
-  if (env.FLUIG_HOST_PROD) out.push('prod');
+  if (preenchida(env, 'FLUIG_HOST') && temAutenticacao('')) out.push('teste');
+  if (preenchida(env, 'FLUIG_HOST_PROD') && temAutenticacao('_PROD')) out.push('prod');
   return out;
 }
 
@@ -236,7 +245,7 @@ export function loadConfig(alvo = 'teste', env = process.env) {
   const vPass = isProd ? 'FLUIG_PASS_PROD' : 'FLUIG_PASS';
   const vCmd = isProd ? 'FLUIG_PASS_CMD_PROD' : 'FLUIG_PASS_CMD';
   const vCookie = isProd ? 'FLUIG_COOKIE_CMD_PROD' : 'FLUIG_COOKIE_CMD';
-  const definida = (k) => !!env[k] && !!String(env[k]).trim();
+  const definida = (k) => preenchida(env, k);
   // Com cookie, a senha não existe no modo: nenhuma tentativa de login.do sai, nem por fallback.
   const comCookie = definida(vCookie);
 
