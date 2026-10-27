@@ -1,10 +1,67 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
 const SERVER = new URL('../server.js', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
 const FONTE = readFileSync(new URL('../server.js', import.meta.url), 'utf8');
+
+/**
+ * Servidor MCP de verdade, falando stdio, apontado para um Fluig falso que só conta requisições.
+ * `fluig.requisicoes === 0` prova que a recusa aconteceu antes de qualquer coisa sair da máquina.
+ * `ambiente` acrescenta variáveis ao do servidor; valor null tira a variável.
+ */
+async function conectar(t, ambiente = {}) {
+  const fluig = { requisicoes: 0 };
+  const http = createServer((req, res) => {
+    fluig.requisicoes++;
+    res.writeHead(500, { 'Content-Type': 'text/plain' });
+    res.end('Fluig falso');
+  });
+  await new Promise((ok) => http.listen(0, '127.0.0.1', ok));
+  const host = `http://127.0.0.1:${http.address().port}`;
+  const saida = mkdtempSync(join(tmpdir(), 'tools-saida-'));
+  const credencial = (sufixo) => ({
+    [`FLUIG_HOST${sufixo}`]: host, [`FLUIG_USER${sufixo}`]: 'fulano',
+    [`FLUIG_PASS${sufixo}`]: 'senha', [`FLUIG_USERCODE${sufixo}`]: 'fulano',
+  });
+  const env = { ...credencial(''), ...credencial('_PROD'), FLUIG_SAIDA_DIR: saida, ...ambiente };
+  for (const [k, v] of Object.entries(env)) if (v === null) delete env[k];
+  const mcp = new Client({ name: 'tools-test', version: '0' });
+  await mcp.connect(new StdioClientTransport({ command: process.execPath, args: [SERVER], env, stderr: 'ignore' }));
+  t.after(async () => {
+    await mcp.close();
+    http.closeAllConnections();
+    http.close();
+    rmSync(saida, { recursive: true, force: true });
+  });
+  const chamar = async (name, args) => {
+    const r = await mcp.callTool({ name, arguments: args });
+    return { erro: r.isError === true, texto: r.content.map((c) => c.text).join('\n') };
+  };
+  return { mcp, fluig, saida, chamar };
+}
+
+/** As doze escritas que até a 1.1.0 rodavam sem confirm, com argumentos mínimos válidos. */
+const CONFIRM_EM_PROD = {
+  fluig_dataset_save: { datasetId: 'ds_x', code: 'function createDataset() {}' },
+  fluig_dataset_enable: { datasetId: 'ds_x', ativo: true },
+  fluig_globalevent_save: { eventId: 'afterProcessCreate', code: 'function afterProcessCreate() {}' },
+  fluig_workflow_events_update: { processId: 'ZZ_TESTE', version: 1, events: [] },
+  fluig_form_save: { documentId: 1, datasetName: 'ds_form', cardDescription: 'x', files: [] },
+  fluig_process_start: { processId: 'ZZ_TESTE', choosedState: 2 },
+  fluig_process_move: { processInstanceId: 1, choosedState: 2 },
+  fluig_process_take: { processInstanceId: 1 },
+  fluig_rest_post: { path: '/api/public/2.0/x', body: '{}' },
+  fluig_job_add: { description: 'x', expression: '0 00 02 1/1 * ? *', jobType: 1 },
+  fluig_job_delete: { jobId: 'x', jobType: 23 },
+  fluig_job_run: { jobId: 'x', jobType: 23 },
+};
 
 /** Roda o servidor em modo listagem, com ambiente controlado. */
 function listar(env = {}) {
@@ -32,23 +89,110 @@ test('modo somente leitura esconde TODA ferramenta de escrita', () => {
   assert.doesNotMatch(listar({ FLUIG_READONLY: '1' }), /^\s*!\s/m, 'vazou ferramenta de escrita');
 });
 
-test('a lista de escrita cobre tudo que pede confirm', () => {
-  const escrita = new Set(FONTE.match(/TOOLS_ESCRITA = new Set\(\[([\s\S]*?)\]\)/)[1].match(/fluig_[a-z_0-9]+/g));
-  // Toda tool que exige `confirm` altera estado — logo tem que estar na lista de escrita.
-  // Heurística por nome já errou nos dois sentidos, então a lista é curada e este teste a guarda.
-  //
-  // O fonte é fatiado por definição de tool: procurar `confirm` numa janela de N caracteres
-  // depois do nome faz o bloco de uma tool invadir o da seguinte, e acusa como "sem confirm"
-  // quem nunca pediu confirm nenhum.
-  const blocos = FONTE.split(/\n  \{\n    name: '/).slice(1);
-  const comConfirm = blocos
-    .map((b) => ({ nome: b.match(/^(fluig_[a-z_0-9]+)'/)?.[1], temConfirm: /confirm: \{ type: 'boolean'/.test(b) }))
-    .filter((t) => t.nome && t.temConfirm)
-    .map((t) => t.nome);
+test('confirm e escrita andam juntos: toda escrita declara confirm, e só escrita declara', async (t) => {
+  // Lido do schema que o cliente MCP recebe, não do fonte: é ele que diz ao agente o que mandar.
+  // A marca `!` do --list sai de TOOLS_ESCRITA, a lista curada (heurística por nome errou nos dois sentidos).
+  const escrita = new Set(listar().split('\n').map((l) => l.match(/^\s*!\s*(fluig_[a-z_0-9]+):/)?.[1]).filter(Boolean));
+  const { mcp } = await conectar(t);
+  const { tools } = await mcp.listTools();
+  const comConfirm = new Set(tools.filter((x) => x.inputSchema.properties?.confirm?.type === 'boolean').map((x) => x.name));
 
-  assert.ok(comConfirm.length > 10, `o fatiamento não achou tools com confirm (achou ${comConfirm.length})`);
-  const faltando = comConfirm.filter((n) => !escrita.has(n));
-  assert.deepEqual(faltando, [], `tools com confirm fora de TOOLS_ESCRITA: ${faltando.join(', ')}`);
+  assert.ok(escrita.size > 30, `a marca ! sumiu do --list (achou ${escrita.size})`);
+  const semConfirm = [...escrita].filter((n) => !comConfirm.has(n));
+  assert.deepEqual(semConfirm, [], `escrita sem confirm no schema: ${semConfirm.join(', ')}`);
+  const confirmEmLeitura = [...comConfirm].filter((n) => !escrita.has(n));
+  assert.deepEqual(confirmEmLeitura, [], `confirm em ferramenta fora de TOOLS_ESCRITA: ${confirmEmLeitura.join(', ')}`);
+});
+
+test('em produção, as doze escritas sem confirm são recusadas antes de qualquer requisição', async (t) => {
+  const { fluig, chamar } = await conectar(t);
+  for (const [nome, args] of Object.entries(CONFIRM_EM_PROD)) {
+    for (const confirm of [undefined, false]) {
+      const r = await chamar(nome, { env: 'prod', ...args, confirm });
+      assert.ok(r.erro, `${nome} (confirm=${confirm}) deveria ser recusada`);
+      assert.match(r.texto, new RegExp(`${nome} .*PRODUÇÃO.*exige confirm:true`), nome);
+    }
+  }
+  assert.equal(fluig.requisicoes, 0, 'nenhuma chamada recusada pode chegar ao servidor');
+});
+
+test('chamada recusada por confirm não roda o comando da senha (FLUIG_PASS_CMD_PROD)', async (t) => {
+  // O loadConfig executa o comando do cofre ao criar o cliente do ambiente. Uma escrita que vai ser
+  // recusada não pode disparar o cofre (prompt, efeito colateral, erro do comando no lugar do de confirm).
+  const dir = mkdtempSync(join(tmpdir(), 'tools-cofre-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const marca = join(dir, 'cofre-rodou');
+  const cofre = join(dir, 'cofre.mjs');
+  writeFileSync(cofre, `import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(marca)}, 'x');\nconsole.log('senha');\n`);
+  const { fluig, chamar } = await conectar(t, {
+    FLUIG_PASS_PROD: null, FLUIG_PASS_CMD_PROD: `"${process.execPath}" "${cofre}"`,
+  });
+
+  const args = CONFIRM_EM_PROD.fluig_dataset_save;
+  assert.match((await chamar('fluig_dataset_save', { env: 'prod', ...args })).texto, /exige confirm:true/);
+  assert.match((await chamar('fluig_dataset_delete', { env: 'prod', datasetId: 'ds_x', confirm: 'false' })).texto,
+    /confirm precisa ser booleano/);
+  assert.equal(existsSync(marca), false, 'o comando da senha rodou para uma chamada recusada');
+  assert.equal(fluig.requisicoes, 0);
+
+  // Prova de que o teste enxerga o cofre: a chamada confirmada o executa.
+  await chamar('fluig_dataset_save', { env: 'prod', ...args, confirm: true });
+  assert.equal(existsSync(marca), true);
+});
+
+test('em homologação as mesmas escritas passam sem confirm, e confirm:true libera a produção', async (t) => {
+  const { fluig, chamar } = await conectar(t);
+  const teste = await chamar('fluig_dataset_save', { env: 'teste', ...CONFIRM_EM_PROD.fluig_dataset_save });
+  assert.doesNotMatch(teste.texto, /confirm/, 'homologação não pede confirm');
+  const antes = fluig.requisicoes;
+  assert.ok(antes > 0, 'a chamada de homologação deveria ter chegado ao servidor');
+
+  const prod = await chamar('fluig_rest_post', { env: 'prod', ...CONFIRM_EM_PROD.fluig_rest_post, confirm: true });
+  assert.doesNotMatch(prod.texto, /confirm/);
+  assert.ok(fluig.requisicoes > antes, 'com confirm:true a chamada de produção segue para o servidor');
+});
+
+test('confirm que não é booleano é recusado em toda ferramenta, em vez de virar true por !!', async (t) => {
+  // "false" é string não vazia: `!!confirm` a tomava por confirmação.
+  const { fluig, chamar } = await conectar(t);
+  for (const [nome, args] of [
+    ['fluig_dataset_delete', { datasetId: 'ds_x' }],
+    ['fluig_dataset_save', CONFIRM_EM_PROD.fluig_dataset_save],
+  ]) {
+    for (const env of ['teste', 'prod']) {
+      const r = await chamar(nome, { env, ...args, confirm: 'false' });
+      assert.ok(r.erro, `${nome} em ${env}`);
+      assert.match(r.texto, /confirm precisa ser booleano/, `${nome} em ${env}`);
+    }
+  }
+  assert.equal(fluig.requisicoes, 0);
+});
+
+test('fluig_deploy_process só lê xmlPath e svgPath de dentro da pasta de saída', async (t) => {
+  const { fluig, saida, chamar } = await conectar(t);
+  const fora = mkdtempSync(join(tmpdir(), 'tools-fora-'));
+  t.after(() => rmSync(fora, { recursive: true, force: true }));
+  writeFileSync(join(fora, 'id_rsa'), '-----BEGIN OPENSSH PRIVATE KEY-----');
+  const base = { env: 'teste', confirm: true, processId: 'ZZ_TESTE' };
+
+  for (const args of [
+    { xmlPath: join(fora, 'id_rsa') },
+    { xmlPath: '../id_rsa' },
+    { xml: '<list/>', svgPath: join(fora, 'id_rsa') },
+  ]) {
+    const r = await chamar('fluig_deploy_process', { ...base, ...args });
+    assert.ok(r.erro, JSON.stringify(args));
+    assert.match(r.texto, /(xmlPath|svgPath) fora da pasta de saída/, JSON.stringify(args));
+    assert.doesNotMatch(r.texto, /OPENSSH/);
+  }
+  assert.equal(fluig.requisicoes, 0, 'arquivo de fora não pode ser lido nem enviado');
+
+  // Dentro da pasta (relativo a ela) a leitura acontece e o deploy segue para o servidor.
+  mkdirSync(join(saida, 'proc'));
+  writeFileSync(join(saida, 'proc', 'ZZ_TESTE.ecm30.xml'), '<list><ProcessDefinition/></list>');
+  const r = await chamar('fluig_deploy_process', { ...base, xmlPath: 'proc/ZZ_TESTE.ecm30.xml' });
+  assert.doesNotMatch(r.texto, /fora da pasta|ENOENT/);
+  assert.ok(fluig.requisicoes > 0);
 });
 
 test('toda ferramenta exige o parâmetro env', () => {
