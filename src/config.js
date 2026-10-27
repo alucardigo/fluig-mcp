@@ -96,9 +96,10 @@ function motivoDaFalha(e, timeoutMs, dica, stderr = e.stderr) {
     motivo += '; no Windows, .cmd/.bat não rodam sem shell: aponte para o .exe ou use '
       + 'powershell.exe -NoProfile -Command "..." (veja docs/clientes.md)';
   }
-  // Cookie de sessão também é segredo: se o comando falhou depois de imprimi-lo no stderr, não vai à mensagem.
+  // Cookie é segredo, e qualquer par nome=valor pode ser um (LtpaToken2, por exemplo, além de JSESSIONIDSSO):
+  // se o comando falhou depois de imprimi-lo no stderr, todo par vai redigido, e não só os de sessão conhecidos.
   const erro = String(stderr ?? '').replace(/\s+/g, ' ').trim()
-    .replace(/(JSESSIONIDSSO|jwt\.token)=\S+/g, '$1=…');
+    .replace(/([A-Za-z0-9_.-]+)=\S+/g, '$1=…');
   if (!erro) return motivo;
   return `${motivo}: ${erro.length > 200 ? `${erro.slice(0, 200)}…` : erro}`;
 }

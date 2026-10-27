@@ -365,3 +365,14 @@ test('falha do comando de cookie mostra o stderr na mensagem, com o cookie redig
     return true;
   });
 });
+
+test('stderr de falha do comando de cookie redige todos os pares, não só os de sessão conhecidos', async () => {
+  // Um cookie auxiliar (LtpaToken2) saía na mensagem: a redação só conhecia JSESSIONIDSSO e jwt.token.
+  const comando = `${NODE} -e "process.stderr.write('falha LtpaToken2=SEGUNDO_SEGREDO JSESSIONIDSSO=PRIMEIRO_SEGREDO'); process.exit(4)"`;
+  await assert.rejects(() => cookieDoComando(comando, 'FLUIG_COOKIE_CMD'), (erro) => {
+    assert.doesNotMatch(erro.message, /SEGUNDO_SEGREDO/, 'o cookie auxiliar não pode aparecer na mensagem');
+    assert.doesNotMatch(erro.message, /PRIMEIRO_SEGREDO/, 'o cookie de sessão não pode aparecer na mensagem');
+    assert.match(erro.message, /falha/, 'o texto do stderr continua na mensagem');
+    return true;
+  });
+});
