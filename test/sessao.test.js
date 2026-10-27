@@ -290,6 +290,7 @@ test('_sessaoViva: só rejeição definitiva de sessão é false; resposta sem p
   const casos = [
     [resposta(200, 'pong'), true],
     [resposta(401, ''), false],
+    [resposta(302, ''), false],
     [resposta(200, PAGINA_SAML, { contentType: 'text/html' }), false],
     [resposta(404, 'não encontrado', { contentType: 'text/plain' }), null],
     [resposta(200, 'corpo qualquer'), null],
@@ -311,6 +312,33 @@ test('ping com 404 sem relação com a sessão mantém o cookie e não força no
 
   assert.equal(await c.login(), 'JSESSIONIDSSO=atual');
   assert.equal(srv.logins, 0, 'um ping inconclusivo não pode gastar um login');
+});
+
+test('ping redirecionado sem pong (302 para a tela de login) é sessão acabada: o login refaz a sessão', async () => {
+  // Portal com SSO manda o navegador para a tela de login com um 302. Sem tratar o 3xx, o ping virava "não
+  // sei" e o cookie morto seguia valendo até a próxima falha.
+  const c = novoCliente();
+  c._cookie = 'JSESSIONIDSSO=atual';
+  c._cookieAt = Date.now() - 60 * 60_000;
+  const srv = servidorFalso(c, [resposta(302, '')]);
+
+  assert.equal(await c.login(), 'JSESSIONIDSSO=s1');
+  assert.equal(srv.logins, 1, 'um 302 sem pong precisa refazer a sessão');
+});
+
+test('ping inconclusivo não renova a validade do cookie: a próxima chamada pergunta ao servidor de novo', async () => {
+  const c = novoCliente();
+  c._cookie = 'JSESSIONIDSSO=atual';
+  c._cookieAt = Date.now() - 60 * 60_000;
+  const srv = servidorFalso(c, [
+    resposta(404, 'não encontrado', { contentType: 'text/plain' }),
+    resposta(404, 'não encontrado', { contentType: 'text/plain' }),
+  ]);
+
+  assert.equal(await c.login(), 'JSESSIONIDSSO=atual');
+  assert.equal(await c.login(), 'JSESSIONIDSSO=atual');
+  assert.equal(srv.chamadas.length, 2, 'um cookie não confirmado não pode ficar válido por 20 min sem novo ping');
+  assert.equal(srv.logins, 0);
 });
 
 test('updateWorkflowEvents: sessão expirada no modo cookie descarta o cookie e manda gerar outro e rodar o reset', async () => {

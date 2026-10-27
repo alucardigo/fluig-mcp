@@ -147,6 +147,41 @@ test('consulta da versão que nunca responde vira erro de tempo limite, e o diag
   assert.equal(info.host, HOST, 'o resto do diagnóstico continua vindo');
 });
 
+test('user-info que nunca responde não trava o diagnóstico: o usuário vai nulo e a versão segue', { timeout: 15000 }, async () => {
+  const c = novoCliente();
+  c._versaoTimeoutMs = 50;
+  servidorComVersao(c, [resposta(200, '{"version":"1.7.0"}', { contentType: 'application/json' })]);
+  const responder = c._fetch;
+  c._fetch = (path, opts) => (path === '/authentication/api/v1/login/user-info'
+    ? new Promise(() => {}) // o servidor aceita a conexão e não responde ao user-info
+    : responder(path, opts));
+
+  const info = await c.versionInfo();
+
+  assert.equal(info.usuario, null);
+  assert.equal(info.servidorVersao, '1.7.0');
+});
+
+test('consulta da versão sem resposta no modo cookie avisa que o login pode estar esperando o MFA', { timeout: 15000 }, async () => {
+  const c = new FluigClient(loadConfig('teste', {
+    FLUIG_HOST: HOST,
+    FLUIG_USER: 'fulano',
+    FLUIG_USERCODE: 'fulano',
+    FLUIG_COOKIE_CMD: `"${process.execPath}" -e "process.stdout.write('JSESSIONIDSSO=a')"`,
+  }));
+  c._cookie = 'JSESSIONIDSSO=a'; // sessão já aberta: o comando de cookie não precisa rodar aqui
+  c._cookieAt = Date.now();
+  c._versaoTimeoutMs = 50;
+  servidorComVersao(c, [new Promise(() => {})]);
+
+  const info = await c.versionInfo();
+
+  assert.equal(info.servidorVersao, null);
+  assert.match(info.servidorVersaoErro, /sem resposta/);
+  assert.match(info.servidorVersaoErro, /MFA/);
+  assert.match(info.servidorVersaoErro, /FLUIG_COOKIE_TIMEOUT_MS/);
+});
+
 test('a consulta que responde a tempo não deixa timer aberto (o withTimeout deixaria)', async () => {
   const c = novoCliente();
   c._versaoTimeoutMs = 60_000;

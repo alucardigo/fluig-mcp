@@ -128,9 +128,10 @@ function rodarComandoCookie(linha, variavel, timeoutMs) {
   const [cmd, ...args] = dividirComando(linha);
   if (!cmd) throw new Error(`${variavel} está vazia.`);
   return new Promise((resolver, rejeitar) => {
-    // killSignal: o SIGTERM padrão é só um pedido. Um comando que o ignora não termina, e a promessa ficaria
-    // pendente para sempre; o SIGKILL garante o fim do estouro. windowsHide: mesmo motivo do comando da senha
-    // (janela piscando num cliente sem console).
+    // killSignal: no Unix, o SIGTERM padrão é só um pedido. Um comando que o ignora não termina, e a promessa
+    // ficaria pendente para sempre; o SIGKILL garante o fim do estouro. No Windows o Node já encerra o filho à
+    // força, qualquer que seja o sinal. windowsHide: mesmo motivo do comando da senha (janela piscando num
+    // cliente sem console).
     const opcoes = { encoding: 'utf8', timeout: timeoutMs, killSignal: 'SIGKILL', windowsHide: true };
     const filho = execFile(cmd, args, opcoes, (e, saida) => {
       if (e) {

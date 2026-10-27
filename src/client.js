@@ -145,12 +145,13 @@ const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeo
  * Espera `promessa` por no máximo `ms`. O timer é desarmado quando a promessa termina, então nada fica
  * aberto no event loop; o withTimeout acima deixa o timer vivo até estourar. O pedido que ficou para trás
  * não é abortado: só deixa de ser esperado. O erro leva `limiteDeTempo` para quem chamou distinguir.
+ * `dica`, quando houver, vai no fim da mensagem de estouro.
  */
-function comLimiteDeTempo(promessa, ms, descricao) {
+function comLimiteDeTempo(promessa, ms, descricao, dica = '') {
   let timer;
   const prazo = new Promise((_, rej) => {
     timer = setTimeout(() => {
-      const erro = new Error(`${descricao} sem resposta em ${ms / 1000} s`);
+      const erro = new Error(`${descricao} sem resposta em ${ms / 1000} s${dica ? ` — ${dica}` : ''}`);
       erro.limiteDeTempo = true;
       rej(erro);
     }, ms);
@@ -361,8 +362,11 @@ export class FluigClient {
     if (this._cookie) {
       // Parado tempo suficiente para ter expirado no servidor: confirma antes de reaproveitar.
       const visto = this._cookie;
-      if ((await this._sessaoViva(visto)) !== false) {
-        if (this._cookie === visto) this._cookieAt = Date.now();
+      const viva = await this._sessaoViva(visto);
+      if (viva !== false) {
+        // Só o "sim" do servidor renova a validade. Um ping inconclusivo (null) mantém o cookie, mas não o dá
+        // por confirmado: a próxima chamada pergunta de novo.
+        if (viva === true && this._cookie === visto) this._cookieAt = Date.now();
         return this._cookie || visto;
       }
       this._descartarSessao(visto);
@@ -478,10 +482,11 @@ export class FluigClient {
 
   /**
    * Pergunta ao servidor se `cookie` ainda abre sessão (sem seguir redirecionamento).
-   * true = viva · false = o servidor disse que a sessão acabou (a mesma regra de sessaoExpirada) · null =
-   * não deu para saber: rede, 5xx, bloqueio de IPS, ou uma resposta sem pong que não é rejeição de sessão
-   * (um 404 sem relação, por exemplo). "Não sei" não é "morta": derrubar a sessão por isso gastaria um
-   * login à toa, e a própria requisição seguinte detecta a sessão expirada se for o caso.
+   * true = viva · false = o servidor disse que a sessão acabou (a mesma regra de sessaoExpirada, ou um
+   * redirecionamento sem pong, que é como o portal manda para a tela de login) · null = não deu para saber:
+   * rede, 5xx, bloqueio de IPS, ou uma resposta sem pong que não é rejeição de sessão (um 404 sem relação,
+   * por exemplo). "Não sei" não é "morta": derrubar a sessão por isso gastaria um login à toa, e a própria
+   * requisição seguinte detecta a sessão expirada se for o caso.
    */
   async _sessaoViva(cookie) {
     let r;
@@ -497,6 +502,8 @@ export class FluigClient {
     const text = await r.text().catch(() => '');
     if (r.ok && text.includes('pong')) return true;
     if (r.status >= 500 || /FortiGuard|Web Filter Violation|Web Page Blocked/i.test(text)) return null;
+    // Redirecionamento sem pong: o portal levou o ping para a tela de login, e isso é sessão acabada.
+    if (r.status >= 300 && r.status < 400) return false;
     // Só rejeição definitiva conta como sessão morta; o resto é "não sei", e o cookie é mantido.
     return sessaoExpirada(r.status, text, r.headers?.get?.('content-type')) ? false : null;
   }
@@ -1766,11 +1773,18 @@ export class FluigClient {
    * Mata a dúvida "qual MCP roda". A versão nunca derruba o diagnóstico (ver _versaoDoServidor).
    */
   async versionInfo() {
+    // O login não tem limite próprio aqui: é pré-requisito, e no modo cookie pode estar esperando o MFA, que
+    // tem o seu (FLUIG_COOKIE_TIMEOUT_MS). Um limite de 15 s cortaria a aprovação no celular.
     const cookie = this._cookie || (await this.login());
     const nomes = cookie.split('; ').map(c => c.split('=')[0]);
     let usuario = null;
     try {
-      const ui = await this._rest('/authentication/api/v1/login/user-info');
+      // Com limite, como a consulta da versão: um servidor que não responde não trava o diagnóstico.
+      const ui = await comLimiteDeTempo(
+        this._rest('/authentication/api/v1/login/user-info'),
+        this._versaoTimeoutMs,
+        'consulta do usuário',
+      );
       if (ui && !ui._raw) usuario = { id: ui.id, code: ui.code, admin: ui.admin, tenant: ui.tenantDescription };
     } catch { /* diagnóstico não pode derrubar o diagnóstico */ }
     const versao = await this._versaoDoServidor();
@@ -1797,6 +1811,8 @@ export class FluigClient {
         this._restRaw(ROTA_VERSAO_FLUIG, { accept: 'text/plain, application/json' }),
         this._versaoTimeoutMs,
         'consulta da versão',
+        // O _restRaw espera o login, e no modo cookie o login pode estar esperando o MFA.
+        this.cookieCmd ? 'no modo cookie, pode ser o login esperando o MFA (FLUIG_COOKIE_TIMEOUT_MS)' : '',
       );
       if (r.status < 200 || r.status >= 300) return { servidorVersao: null, servidorVersaoErro: `HTTP ${r.status}` };
       const corpo = String(r.text || '').trim();

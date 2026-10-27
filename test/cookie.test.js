@@ -181,7 +181,9 @@ test('FLUIG_COOKIE_TIMEOUT_MS limita a espera do comando, e a mensagem diz o lim
   await assert.rejects(() => c.login(), /FLUIG_COOKIE_CMD: o comando falhou \(não respondeu em 200 ms/);
 });
 
-test('comando de cookie que ignora SIGTERM é derrubado pelo timeout, sem esperar que ele termine', { timeout: 15000 }, async () => {
+// No Windows o Node encerra o filho com TerminateProcess, qualquer que seja o sinal: o teste passaria sem o
+// SIGKILL. Ele só prova a correção onde o SIGTERM pode ser ignorado, ou seja, no Unix.
+test('comando de cookie que ignora SIGTERM é derrubado pelo timeout, sem esperar que ele termine', { timeout: 15000, skip: process.platform === 'win32' && 'no Windows o Node já encerra o filho à força' }, async () => {
   // O execFile manda SIGTERM por padrão, e um processo que o ignora não morre: sem SIGKILL a promessa só
   // rejeitaria quando ele terminasse, ou seja, nunca.
   const ignoraSigterm = `${NODE} -e "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"`;
