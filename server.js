@@ -1182,9 +1182,8 @@ const TOOLS = [
   },
 ];
 
-// Injeta o parâmetro `env` em TODAS as ferramentas de uma vez (em vez de editar as ~20
-// definições uma a uma). teste é sempre o default -- quem não passar env continua batendo
-// em o servidor de homologação exatamente como antes; prod exige o caller passar env:"prod" explicitamente.
+// Injeta o parâmetro `env` em TODAS as ferramentas de uma vez (em vez de editar as definições uma a
+// uma). Obrigatório e sem default: o despacho recusa a chamada sem ele.
 for (const t of TOOLS) {
   t.inputSchema.properties = t.inputSchema.properties || {};
   t.inputSchema.properties.env = {
@@ -1221,6 +1220,27 @@ const TOOLS_ESCRITA = new Set([
   'fluig_rm_dataserver_schema',
 ]);
 for (const t of TOOLS) t.write = TOOLS_ESCRITA.has(t.name);
+
+/**
+ * Escritas que em homologação passam direto e em PRODUÇÃO exigem confirm:true — o mesmo critério do
+ * `_guardProdWrite` de src/client.js. São as do ciclo de desenvolvimento (salvar dataset, publicar
+ * formulário, mover solicitação de teste): pedir confirm a cada chamada em homologação só ensinaria o
+ * agente a mandar confirm:true sempre. As demais escritas exigem confirm em qualquer ambiente, e o
+ * próprio cliente recusa. A conferência fica no despacho, não nos métodos do cliente, porque eles
+ * servem também a outras ferramentas: o db_query grava o dataset descartável por `saveDataset`, e
+ * `_restRaw` é a base de quase toda rota REST.
+ */
+const CONFIRM_EM_PROD = new Set([
+  'fluig_dataset_save', 'fluig_dataset_enable', 'fluig_globalevent_save', 'fluig_workflow_events_update',
+  'fluig_form_save', 'fluig_process_start', 'fluig_process_move', 'fluig_process_take', 'fluig_rest_post',
+  'fluig_job_add', 'fluig_job_delete', 'fluig_job_run',
+]);
+for (const t of TOOLS) {
+  if (!CONFIRM_EM_PROD.has(t.name)) continue;
+  t.inputSchema.properties.confirm = {
+    type: 'boolean', description: 'obrigatório em env="prod" (em homologação passa direto)',
+  };
+}
 
 const READONLY = /^(1|true|yes|on)$/i.test(String(process.env.FLUIG_READONLY || ''));
 const TOOLS_ATIVAS = READONLY ? TOOLS.filter(t => !t.write) : TOOLS;
@@ -1306,8 +1326,18 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   let alvo;
   try {
     alvo = clienteDe(args.env);
-    // Texto que saiu cortado de uma leitura (ver src/saida.js) não volta para o Fluig.
-    if (tool.write) recusarCortado(args, '');
+    if (tool.write) {
+      // Os handlers liam `!!confirm`, e a string "false" contava como confirmação.
+      if (args.confirm !== undefined && typeof args.confirm !== 'boolean') {
+        throw new Error(`confirm precisa ser booleano (true ou false), não ${JSON.stringify(args.confirm)}.`);
+      }
+      if (CONFIRM_EM_PROD.has(tool.name) && alvo.isProd && args.confirm !== true) {
+        throw new Error(`${tool.name} altera o servidor de PRODUÇÃO e exige confirm:true. `
+          + 'Em homologação (env="teste") passa direto.');
+      }
+      // Texto que saiu cortado de uma leitura (ver src/saida.js) não volta para o Fluig.
+      recusarCortado(args, '');
+    }
   } catch (e) {
     return { content: [{ type: 'text', text: 'ERRO: ' + (e?.message || e) }], isError: true };
   }
