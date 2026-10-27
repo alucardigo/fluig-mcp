@@ -354,3 +354,14 @@ test('sem cookie nem senha, a falta cita também FLUIG_COOKIE_CMD_PROD', () => {
 test('FLUIG_COOKIE_CMD com aspas sem fechar é erro na carga da configuração', () => {
   assert.throws(() => loadConfig('teste', { ...BASE, FLUIG_COOKIE_CMD: 'pass show "fluig' }), /aspas/);
 });
+
+test('falha do comando de cookie mostra o stderr na mensagem, com o cookie redigido', async () => {
+  // O stderr chega como terceiro argumento do callback do execFile; antes ele se perdia e a mensagem trazia só o código.
+  const comando = `${NODE} -e "process.stderr.write('vault locked JSESSIONIDSSO=segredo'); process.exit(7)"`;
+  await assert.rejects(() => cookieDoComando(comando, 'FLUIG_COOKIE_CMD'), (erro) => {
+    assert.match(erro.message, /vault locked/);
+    assert.match(erro.message, /\(7: /);
+    assert.doesNotMatch(erro.message, /segredo/, 'o valor do cookie não pode aparecer na mensagem');
+    return true;
+  });
+});
