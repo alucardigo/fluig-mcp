@@ -5,8 +5,7 @@ import net from 'node:net';
 // mas instâncias DIFERENTES: passar um Agent do pacote para o fetch global dá
 // UND_ERR_INVALID_ARG, porque o dispatcher precisa ser da mesma cópia da undici.
 import { Agent, fetch } from 'undici';
-import { readFileSync } from 'node:fs';
-import { conferirDestino, gravarNaSaida } from './saida.js';
+import { conferirDestino, gravarNaSaida, lerNaSaida } from './saida.js';
 
 /**
  * Cliente da API do TOTVS Fluig — headless (sem IDE). Replica o protocolo da
@@ -1816,7 +1815,8 @@ export class FluigClient {
   async formCreate({ formName, parentId, zipPath }, opts = {}) {
     if (opts.confirm !== true) throw new Error('formCreate exige { confirm:true } — cria documento no GED.');
     if (!zipPath) throw new Error('formCreate: informe zipPath (ZIP com o HTML do formulário).');
-    const arquivo = readFileSync(zipPath);
+    // O arquivo sai da máquina: só de dentro da pasta de saída (ver src/saida.js).
+    const arquivo = lerNaSaida(zipPath, { campo: 'zipPath', base: this.saidaDir });
     const fd = new FormData();
     fd.append('file', new Blob([arquivo]), zipPath.split(/[\\/]/).pop());
     fd.append('formName', String(formName));
@@ -1941,8 +1941,9 @@ export class FluigClient {
    */
   async gedUpload(caminhoLocal, parentId, opts = {}) {
     if (opts.confirm !== true) throw new Error('gedUpload exige { confirm:true } — publica documento no GED.');
+    // O arquivo sai da máquina: só de dentro da pasta de saída (ver src/saida.js).
+    const conteudo = lerNaSaida(caminhoLocal, { campo: 'caminhoLocal', base: this.saidaDir });
     const nome = opts.nomeArquivo || caminhoLocal.split(/[\\/]/).pop();
-    const conteudo = readFileSync(caminhoLocal);
     const fd = new FormData();
     fd.append('file', new Blob([conteudo]), nome);
     const cookie = await this.login();
