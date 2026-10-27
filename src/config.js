@@ -128,8 +128,11 @@ function rodarComandoCookie(linha, variavel, timeoutMs) {
   const [cmd, ...args] = dividirComando(linha);
   if (!cmd) throw new Error(`${variavel} está vazia.`);
   return new Promise((resolver, rejeitar) => {
-    // windowsHide: mesmo motivo do comando da senha (janela piscando num cliente sem console).
-    const filho = execFile(cmd, args, { encoding: 'utf8', timeout: timeoutMs, windowsHide: true }, (e, saida) => {
+    // killSignal: o SIGTERM padrão é só um pedido. Um comando que o ignora não termina, e a promessa ficaria
+    // pendente para sempre; o SIGKILL garante o fim do estouro. windowsHide: mesmo motivo do comando da senha
+    // (janela piscando num cliente sem console).
+    const opcoes = { encoding: 'utf8', timeout: timeoutMs, killSignal: 'SIGKILL', windowsHide: true };
+    const filho = execFile(cmd, args, opcoes, (e, saida) => {
       if (e) {
         const dica = 'ele está esperando o cofre ou uma aprovação de MFA? Aumente FLUIG_COOKIE_TIMEOUT_MS se for isso.';
         rejeitar(new Error(`${variavel}: o comando falhou (${motivoDaFalha(e, timeoutMs, dica)}) — não vou tentar o login.`));

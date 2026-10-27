@@ -181,6 +181,18 @@ test('FLUIG_COOKIE_TIMEOUT_MS limita a espera do comando, e a mensagem diz o lim
   await assert.rejects(() => c.login(), /FLUIG_COOKIE_CMD: o comando falhou \(não respondeu em 200 ms/);
 });
 
+test('comando de cookie que ignora SIGTERM é derrubado pelo timeout, sem esperar que ele termine', { timeout: 15000 }, async () => {
+  // O execFile manda SIGTERM por padrão, e um processo que o ignora não morre: sem SIGKILL a promessa só
+  // rejeitaria quando ele terminasse, ou seja, nunca.
+  const ignoraSigterm = `${NODE} -e "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"`;
+  const inicio = Date.now();
+  await assert.rejects(
+    () => cookieDoComando(ignoraSigterm, 'FLUIG_COOKIE_CMD', 300),
+    /FLUIG_COOKIE_CMD: o comando falhou \(não respondeu em 300 ms/,
+  );
+  assert.ok(Date.now() - inicio < 5000, `a rejeição demorou ${Date.now() - inicio} ms`);
+});
+
 test('FLUIG_COOKIE_TIMEOUT_MS: padrão de 2 minutos, e valor que não é inteiro positivo é erro', () => {
   const cmd = imprime('JSESSIONIDSSO=a');
   assert.equal(loadConfig('teste', { ...BASE, FLUIG_COOKIE_CMD: cmd }).cookieTimeoutMs, 120000);
