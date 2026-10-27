@@ -3,6 +3,28 @@
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/);
 versionamento [SemVer](https://semver.org/lang/pt-BR/).
 
+## [1.2.0] — não lançada
+
+Os dois pontos que a revisão da 1.1.0 ([issue #3](https://github.com/alucardigo/fluig-mcp/issues/3))
+deixou de fora por mudarem o comportamento de ferramentas que já existiam.
+
+### ⚠️ Mudanças de comportamento
+
+- **As doze escritas que rodavam sem `confirm` exigem `confirm: true` em produção**:
+  `fluig_dataset_save`, `fluig_dataset_enable`, `fluig_globalevent_save`,
+  `fluig_workflow_events_update`, `fluig_form_save`, `fluig_process_start`, `fluig_process_move`,
+  `fluig_process_take`, `fluig_rest_post`, `fluig_job_add`, `fluig_job_delete` e `fluig_job_run`.
+  Em homologação continuam passando direto. Sem `confirm`, a chamada em `env: "prod"` é recusada
+  antes de qualquer requisição. Agora toda ferramenta de escrita declara `confirm` no schema.
+- **`confirm` precisa ser booleano**, em toda ferramenta de escrita. Os handlers liam `!!confirm`,
+  então a string `"false"` contava como confirmação; `"true"` em texto também passa a ser recusado.
+- **O arquivo local que sobe ao Fluig só é lido de dentro da pasta de saída** (`FLUIG_SAIDA_DIR`,
+  padrão `~/fluig-mcp-saida`): `caminhoLocal` do `fluig_ged_upload`, `zipPath` do
+  `fluig_form_create`, `xmlPath` e `svgPath` do `fluig_deploy_process`. Caminho relativo passa a ser
+  relativo a ela. Antes, um texto plantado no Fluig podia induzir o agente a publicar
+  `~/.ssh/id_rsa` no GED. Quem subia arquivo de outra pasta copia para lá antes; `xml` inline no
+  `fluig_deploy_process` continua valendo.
+
 ## [1.1.0] — 2026-10-27
 
 Contribuições da comunidade: a proposta e os PRs de
@@ -147,5 +169,6 @@ no código.
 - `.gitignore` bloqueia `out/`, dumps e material de análise — são dados do cliente e código
   proprietário de terceiro.
 
+[1.2.0]: https://github.com/alucardigo/fluig-mcp/compare/v1.1.0...HEAD
 [1.1.0]: https://github.com/alucardigo/fluig-mcp/compare/e48538a...v1.1.0
 [1.0.0]: https://github.com/alucardigo/fluig-mcp/commit/e48538a
