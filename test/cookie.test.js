@@ -83,6 +83,36 @@ test('CR ou NUL solto antes do cookie na mesma linha não gruda no cookie', asyn
   assert.equal(await cookieDoComando(imprime('Autenticando\\0JSESSIONIDSSO=abc'), 'FLUIG_COOKIE_CMD'), 'JSESSIONIDSSO=abc');
 });
 
+test('prefixo "Cookie:" colado ao par não entra no cookie', async () => {
+  // Um cabeçalho copiado de log ou de navegador ("Cookie: JSESSIONIDSSO=...") não é nome=valor: o prefixo
+  // precisa ficar de fora, senão o header sai com "Cookie:" no meio.
+  assert.equal(await cookieDoComando(imprime('Cookie: JSESSIONIDSSO=abc'), 'FLUIG_COOKIE_CMD'), 'JSESSIONIDSSO=abc');
+});
+
+test('texto separado por espaço não vira parte do nome do cookie', async () => {
+  // Progresso na mesma linha, separado só por espaço: "Autenticando JSESSIONIDSSO" seria o nome lido pelo
+  // servidor, que recusaria a sessão sem apontar a causa.
+  assert.equal(await cookieDoComando(imprime('Autenticando JSESSIONIDSSO=abc'), 'FLUIG_COOKIE_CMD'), 'JSESSIONIDSSO=abc');
+  // Espaço não separável (NBSP) também é espaço para o header: não pode colar o texto ao nome do cookie.
+  assert.equal(await cookieDoComando(imprime('Autenticando\\u00a0JSESSIONIDSSO=abc'), 'FLUIG_COOKIE_CMD'), 'JSESSIONIDSSO=abc');
+});
+
+test('o nome exigido precisa ser um token inteiro: xJSESSIONIDSSO=abc não é cookie de sessão', async () => {
+  await assert.rejects(
+    () => cookieDoComando(imprime('xJSESSIONIDSSO=abc'), 'FLUIG_COOKIE_CMD'),
+    /o comando não devolveu cookie de sessão/,
+  );
+});
+
+test('o header Cookie sai só com o par, mesmo quando a saída traz texto antes dele', async () => {
+  for (const saida of ['Cookie: JSESSIONIDSSO=abc123', 'Autenticando JSESSIONIDSSO=abc123']) {
+    const { c, chamadas } = clienteFalso({ FLUIG_COOKIE_CMD: imprime(saida) });
+    await c._rest('/ecm/api/rest/ecm/x');
+    const rest = chamadas.filter((x) => x.path === '/ecm/api/rest/ecm/x');
+    assert.equal(rest[0].cookie, 'JSESSIONIDSSO=abc123', saida);
+  }
+});
+
 test('progresso colado ao cookie não aparece em versionInfo()', async () => {
   const { c } = clienteFalso({ FLUIG_COOKIE_CMD: imprime('Autenticando\\rJSESSIONIDSSO=abc-secreto') });
   const info = await c.versionInfo();

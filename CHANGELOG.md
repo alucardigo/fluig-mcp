@@ -11,7 +11,9 @@ versionamento [SemVer](https://semver.org/lang/pt-BR/).
   o diagnóstico continua e traz o motivo em `servidorVersaoErro`.
 - `fluig_globalevent_delete` exclui **um** evento global por chamada, pelo id. Sem `confirm: true` é
   dry-run: mostra o código que seria apagado e não apaga nada. Com `confirm: true` apaga, e a resposta
-  traz o código apagado (`eventoApagado`), para restaurar com `fluig_globalevent_save`.
+  traz o código apagado (`eventoApagado`), para restaurar com `fluig_globalevent_save`. O DELETE não é
+  repetido: se a resposta não confirmar ou a conexão cair, a ferramenta relê a lista. Evento que sumiu foi
+  apagado (sucesso com `aviso`); evento que ficou dá erro com o código na mensagem.
 - `FLUIG_COOKIE_CMD` e `FLUIG_COOKIE_CMD_PROD`: sessão só por cookie, sem senha, para tenant com MFA
   ou SSO. Um comando imprime o cookie de sessão (`JSESSIONIDSSO` ou `jwt.token`); o cliente nunca chama
   `login.do` e não cai para senha quando o cookie é recusado. As operações SOAP ficam indisponíveis

@@ -115,6 +115,20 @@ export function sessaoExpirada(status, text = '', contentType = '') {
     .test(corpo);
 }
 
+/**
+ * Texto do erro que o servidor devolveu. O formato real é aninhado, { message: { message: '...' } }, como a
+ * extensão Fluiggers lê; o texto plano também é aceito. Corpo que não é JSON vira o status HTTP, e nada disso
+ * deixa "[object Object]" chegar à mensagem.
+ */
+function motivoDoServidor(r) {
+  if (r?._blocked) return 'página de bloqueio da rede';
+  if (typeof r?.message === 'string') return r.message;
+  if (typeof r?.message?.message === 'string') return r.message.message;
+  if (typeof r?.content === 'string') return r.content;
+  if (r?._raw !== undefined) return `HTTP ${r._status}, resposta não-JSON`;
+  return JSON.stringify(r);
+}
+
 const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
 
 /** Testa conexão TCP a um IP:porta. Resolve true/false, nunca lança. */
@@ -259,8 +273,11 @@ export class FluigClient {
    * resolvedor do Node e tornava `FLUIG_IPS` código morto — apontado na revisão do PR #1 por
    * sourcery-ai e qodo-code-review, e confirmado aqui. Por isso a conexão é fixada via
    * dispatcher, preservando as duas garantias.
+   *
+   * `semRepetir` faz uma tentativa só, sem o retry de erro de transporte. É para escrita que não pode ser
+   * mandada duas vezes (o DELETE de evento global), em que a segunda chegada pode já encontrar o efeito feito.
    */
-  async _fetch(path, opts = {}) {
+  async _fetch(path, { semRepetir = false, ...opts } = {}) {
     return retry(async () => {
       const { ip } = await this._liveBase();
       const headers = { ...(opts.headers || {}), Host: this._hostHeader };
@@ -272,7 +289,7 @@ export class FluigClient {
         // Um header recusado faz o undici ecoar o cookie no erro: ele não pode sair por essa mensagem.
         throw erroSemCookie(e, opts.headers?.Cookie);
       }
-    });
+    }, semRepetir ? 1 : 4);
   }
 
   /**
@@ -509,7 +526,7 @@ export class FluigClient {
     return false;
   }
 
-  async _rest(path, { method = 'GET', body, form = false } = {}) {
+  async _rest(path, { method = 'GET', body, form = false, semRepetir = false } = {}) {
     const headers = { Cookie: await this.login(), Accept: 'application/json' };
     if (body) headers['Content-Type'] = form ? 'application/x-www-form-urlencoded' : 'application/json';
     // O IP "vivo" cacheado por _liveBase() às vezes cai numa rota que o IPS/Fortinet do
@@ -520,9 +537,11 @@ export class FluigClient {
     // Sessão expirada (401, página de login ou o desvio SAML do Fluig Identity) não é bloqueio
     // de rede: loga de novo e repete UMA vez. Se continuar expirada, devolve o _raw em vez de
     // insistir — novo login em laço gastaria tentativas do AD.
+    // Com semRepetir (escrita que não pode ser mandada duas vezes), a página de bloqueio também não é
+    // reenviada: volta como _raw, e quem chamou confere o efeito antes de concluir qualquer coisa.
     let relogou = false;
     for (let attempt = 0; attempt < 3; attempt++) {
-      const r = await this._fetch(path, { method, headers, body });
+      const r = await this._fetch(path, { method, headers, body, semRepetir });
       const text = await r.text();
       if (!relogou && sessaoExpirada(r.status, text, r.headers?.get?.('content-type'))) {
         relogou = true;
@@ -533,7 +552,7 @@ export class FluigClient {
       }
       try { return JSON.parse(text); } catch { /* segue pro fallback abaixo */ }
       const blocked = /FortiGuard|Web Filter Violation|Web Page Blocked/i.test(text);
-      if (blocked && attempt < 2) { this._bustIp(); continue; }
+      if (blocked && attempt < 2 && !semRepetir) { this._bustIp(); continue; }
       return { _status: r.status, _raw: text, _blocked: blocked };
     }
   }
@@ -795,7 +814,7 @@ export class FluigClient {
       const list = await this.listGlobalEvents();
       // A rota grava a LISTA INTEIRA: partir de [] quando a leitura falha apagaria os outros eventos.
       if (!Array.isArray(list)) {
-        throw new Error(`saveGlobalEvent: não consegui ler a lista atual de eventos globais (HTTP ${list?._status ?? '?'}). `
+        throw new Error(`saveGlobalEvent: não consegui ler a lista atual de eventos globais (${motivoDoServidor(list)}). `
           + 'Nada foi gravado — gravar sem ela apagaria os outros eventos.');
       }
       const arr = list.slice();
@@ -812,8 +831,12 @@ export class FluigClient {
   /**
    * APAGA um evento global pelo id. A rota aceita um evento por chamada, e cada chamada leva o seu
    * próprio nome: excluir vários com um forEach assíncrono é o que fazia só o último sumir (issue 97
-   * da extensão Fluiggers). Sucesso é `content: 'OK'` exato; qualquer outra resposta é erro, e o
-   * erro leva a mensagem do servidor, porque apagar não tem volta.
+   * da extensão Fluiggers). Sucesso é `content: 'OK'` exato.
+   *
+   * Apagar não tem volta, então o DELETE vai uma vez só, sem repetição de rede. Se a resposta não
+   * confirmar, ou se a chamada cair, a função não chuta: relê a lista (ver _conferirExclusao). Evento que
+   * sumiu foi apagado, e a função devolve sucesso com `eventoApagado`. Evento que ficou, ou lista ilegível,
+   * é erro com o motivo e com o código na mensagem.
    *
    * Sem `confirm: true` é DRY-RUN: lê a lista e devolve o evento que seria apagado, sem excluir nada (o
    * mesmo padrão de convertProcessInstances). Com confirm, a resposta de sucesso traz o código apagado em
@@ -833,16 +856,42 @@ export class FluigClient {
     }
     return this._naFilaDeEventos(async () => {
       const alvo = await this._eventoGlobal(eventId);
-      const r = await this._rest(
-        `/ecm/api/rest/ecm/globalevent/deleteGlobalEvent?eventName=${encodeURIComponent(eventId)}`,
-        { method: 'DELETE' },
-      );
+      let r;
+      try {
+        r = await this._rest(
+          `/ecm/api/rest/ecm/globalevent/deleteGlobalEvent?eventName=${encodeURIComponent(eventId)}`,
+          { method: 'DELETE', semRepetir: true },
+        );
+      } catch (erro) {
+        return this._conferirExclusao(eventId, alvo, { erro });
+      }
       if (r?.content === 'OK') return { ...r, eventoApagado: alvo };
-      const motivo = r?.message
-        || (typeof r?.content === 'string' ? r.content : null)
-        || (r?._raw !== undefined ? `HTTP ${r._status}, resposta não-JSON` : JSON.stringify(r));
-      throw new Error(`deleteGlobalEvent(${eventId}): o servidor não confirmou a exclusão — ${motivo}`);
+      return this._conferirExclusao(eventId, alvo, { resposta: r });
     });
+  }
+
+  /**
+   * Chamada quando o DELETE não confirmou a exclusão: a resposta veio sem `content: 'OK'` ou a chamada
+   * falhou. O servidor pode ter apagado mesmo assim, com a resposta perdida, e o código só existe em `alvo`.
+   * Relê a lista para saber o estado real. Se o evento não está mais nela, a exclusão aconteceu e a função
+   * devolve sucesso com `eventoApagado`. Se ainda está, ou se a lista não pode ser relida, erra com o motivo
+   * e com o código na mensagem, para que ele não se perca.
+   */
+  async _conferirExclusao(eventId, alvo, { resposta, erro }) {
+    const motivo = erro ? `falha na chamada (${erro.message})` : motivoDoServidor(resposta);
+    const lista = await this.listGlobalEvents().catch(() => null);
+    if (Array.isArray(lista) && !lista.some(e => e.globalEventPK?.eventId === eventId)) {
+      return {
+        confirmadoPelaLista: true,
+        eventoApagado: alvo,
+        aviso: `o servidor não confirmou a exclusão (${motivo}), mas o evento não está mais na lista: a exclusão aconteceu.`,
+      };
+    }
+    const situacao = Array.isArray(lista)
+      ? 'o evento continua na lista'
+      : 'não consegui reler a lista para saber se o evento ficou';
+    throw new Error(`deleteGlobalEvent(${eventId}): o servidor não confirmou a exclusão — ${motivo}; ${situacao}. `
+      + `Código antes de apagar: ${alvo.code}`);
   }
 
   /**
@@ -852,7 +901,7 @@ export class FluigClient {
   async _eventoGlobal(eventId) {
     const lista = await this.listGlobalEvents();
     if (!Array.isArray(lista)) {
-      throw new Error(`deleteGlobalEvent(${eventId}): não consegui ler a lista de eventos globais (HTTP ${lista?._status ?? '?'}). `
+      throw new Error(`deleteGlobalEvent(${eventId}): não consegui ler a lista de eventos globais (${motivoDoServidor(lista)}). `
         + 'Nada foi apagado — sem a lista não há cópia do código para restaurar.');
     }
     const achado = lista.find(e => e.globalEventPK && e.globalEventPK.eventId === eventId);

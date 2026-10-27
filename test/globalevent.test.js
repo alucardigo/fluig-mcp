@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
 import { FluigClient } from '../src/client.js';
 import { loadConfig } from '../src/config.js';
 
@@ -104,6 +105,50 @@ function servidorDeEventos(eventos, { respostaDelete } = {}) {
   };
 }
 
+/**
+ * Fluig falso em HTTP de verdade, com a lista em memória. O primeiro DELETE apaga o evento e fecha o socket
+ * sem responder: é a queda de conexão depois de o servidor já ter feito o trabalho. Os DELETE seguintes
+ * respondem como um Fluig que não acha mais o evento.
+ */
+async function fluigQueCaiNoPrimeiroDelete(t, eventos) {
+  let estado = eventos.map(([eventId, code]) => ({ globalEventPK: { companyId: 1, eventId }, eventDescription: code }));
+  let deletes = 0;
+  const http = createServer((req, res) => {
+    const url = new URL(req.url, 'http://fluig.exemplo.com.br');
+    const enviar = (status, corpo) => {
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(corpo));
+    };
+    if (req.method === 'POST' && url.pathname === LOGIN) {
+      res.writeHead(302, { 'Set-Cookie': 'JSESSIONIDSSO=s1; Path=/' });
+      return res.end();
+    }
+    if (req.method === 'GET' && url.pathname === LISTA) return enviar(200, estado);
+    if (req.method === 'DELETE' && url.pathname === ROTA) {
+      deletes++;
+      const id = url.searchParams.get('eventName');
+      const existia = estado.some((e) => e.globalEventPK.eventId === id);
+      estado = estado.filter((e) => e.globalEventPK.eventId !== id);
+      if (deletes === 1) return req.socket.destroy();
+      if (!existia) return enviar(500, { message: { message: 'Evento global inexistente' } });
+      return enviar(200, { content: 'OK' });
+    }
+    enviar(404, { message: { message: `rota inesperada no teste: ${req.method} ${url.pathname}` } });
+  });
+  await new Promise((ok) => http.listen(0, '127.0.0.1', ok));
+  t.after(() => {
+    http.closeAllConnections();
+    http.close();
+  });
+  const c = new FluigClient(loadConfig('teste', {
+    FLUIG_HOST: `http://127.0.0.1:${http.address().port}`,
+    FLUIG_USER: 'fulano',
+    FLUIG_PASS: 'senha-homolog',
+    FLUIG_USERCODE: 'fulano',
+  }));
+  return { c, deletes: () => deletes };
+}
+
 test('confirm:true exclui com DELETE na rota de evento global, com o id codificado na query', async () => {
   const srv = servidorDeEventos([['before login/v2', 'codigo']]);
   await srv.c.deleteGlobalEvent('before login/v2', { confirm: true });
@@ -136,16 +181,76 @@ test('evento que não está na lista é recusado antes do DELETE', async () => {
 });
 
 test('lista que não pode ser lida recusa a exclusão: sem ela não há cópia do código', async () => {
-  const { c, todas } = clienteComFetch(json(500, { message: 'falha de leitura' }));
-  await assert.rejects(() => c.deleteGlobalEvent('afterProcessCreate', { confirm: true }), /não consegui ler a lista/);
+  // Formato real do Fluig: a mensagem vem aninhada em message.message.
+  const { c, todas } = clienteComFetch(json(500, { message: { message: 'falha de leitura' } }));
+  await assert.rejects(() => c.deleteGlobalEvent('afterProcessCreate', { confirm: true }), (e) =>
+    /não consegui ler a lista/.test(e.message) && /falha de leitura/.test(e.message) && !/\[object Object\]|HTTP \?/.test(e.message));
   assert.equal(todas.filter((x) => x.method === 'DELETE').length, 0);
 });
 
-test('sem content "OK", erra com a mensagem do servidor', async () => {
+test('sem content "OK", erra com a mensagem do servidor, sem "[object Object]" no lugar do texto', async () => {
   const srv = servidorDeEventos([['afterProcessCreate', 'x']], {
-    respostaDelete: json(500, { message: 'Evento global inexistente' }),
+    respostaDelete: json(500, { message: { message: 'Evento global inexistente' } }),
   });
-  await assert.rejects(() => srv.c.deleteGlobalEvent('afterProcessCreate', { confirm: true }), /Evento global inexistente/);
+  await assert.rejects(() => srv.c.deleteGlobalEvent('afterProcessCreate', { confirm: true }), (e) =>
+    /Evento global inexistente/.test(e.message) && !/\[object Object\]/.test(e.message));
+});
+
+test('resposta sem "OK" que não tira o evento da lista é erro, com o código antes de apagar na mensagem', async () => {
+  // Se o código sumisse aqui, a única cópia dele se perderia: o erro tem que trazê-lo.
+  const html = {
+    status: 200,
+    ok: true,
+    text: async () => '<html><body>Erro interno</body></html>',
+    headers: { get: (h) => (h.toLowerCase() === 'content-type' ? 'text/html' : null) },
+  };
+  for (const respostaDelete of [json(200, { content: 'Success' }), html]) {
+    const srv = servidorDeEventos([['afterProcessCreate', 'codigo-antigo-unico']], { respostaDelete });
+    await assert.rejects(() => srv.c.deleteGlobalEvent('afterProcessCreate', { confirm: true }), (e) =>
+      /não confirmou a exclusão/.test(e.message) && e.message.includes('Código antes de apagar: codigo-antigo-unico'));
+    assert.deepEqual(srv.ids(), ['afterProcessCreate']);
+  }
+});
+
+test('resposta sem "OK" depois de o evento já ter saído da lista: a exclusão aconteceu, e o código volta', async () => {
+  const srv = servidorDeEventos([['afterProcessCreate', 'codigo-antigo']]);
+  const porDentro = srv.c._fetch;
+  srv.c._fetch = async (path, opts = {}) => {
+    if (!path.startsWith(ROTA)) return porDentro(path, opts);
+    await porDentro(path, opts); // o servidor apaga de fato...
+    return json(500, { message: { message: 'resposta perdida' } }); // ...e a resposta se perde
+  };
+  const r = await srv.c.deleteGlobalEvent('afterProcessCreate', { confirm: true });
+  assert.deepEqual(r.eventoApagado, { eventId: 'afterProcessCreate', code: 'codigo-antigo' });
+  assert.match(r.aviso, /não confirmou a exclusão/);
+  assert.deepEqual(srv.ids(), []);
+});
+
+test('se a lista não puder ser relida depois da falha do DELETE, erra com o código e não diz que apagou', async () => {
+  const srv = servidorDeEventos([['afterProcessCreate', 'codigo-sem-leitura']], {
+    respostaDelete: json(500, { message: { message: 'Erro do servidor' } }),
+  });
+  const porDentro = srv.c._fetch;
+  let leituras = 0;
+  srv.c._fetch = async (path, opts = {}) => {
+    // A primeira leitura é a de _eventoGlobal, antes do DELETE; a segunda é a conferência depois da falha.
+    if (path === LISTA && ++leituras > 1) return json(500, { message: { message: 'lista indisponível' } });
+    return porDentro(path, opts);
+  };
+  await assert.rejects(() => srv.c.deleteGlobalEvent('afterProcessCreate', { confirm: true }), (e) =>
+    /Erro do servidor/.test(e.message)
+    && /não consegui reler a lista/.test(e.message)
+    && e.message.includes('Código antes de apagar: codigo-sem-leitura')
+    && !e.message.includes('a exclusão aconteceu'));
+});
+
+test('DELETE que cai na rede depois de o servidor apagar: não repete o DELETE e confere a lista', async (t) => {
+  // A repetição mandaria um segundo DELETE, que o servidor recusa como "não existe", e a cópia do código se
+  // perderia. Com uma só tentativa e a releitura, o resultado é sucesso com o código devolvido.
+  const srv = await fluigQueCaiNoPrimeiroDelete(t, [['afterProcessCreate', 'codigo-antigo']]);
+  const r = await srv.c.deleteGlobalEvent('afterProcessCreate', { confirm: true });
+  assert.equal(srv.deletes(), 1, 'o DELETE foi repetido depois da queda da conexão');
+  assert.deepEqual(r.eventoApagado, { eventId: 'afterProcessCreate', code: 'codigo-antigo' });
 });
 
 test('content que não é "OK" exato (ex.: "ok" em minúsculas) não conta como exclusão', async () => {
