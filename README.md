@@ -327,6 +327,12 @@ Do fork dele vieram também três decisões de projeto que este repositório ado
 **modo somente leitura** e **`--list` auditável sem credencial** — a ideia de que a superfície de
 ferramentas precisa ser inspecionável antes de o servidor receber uma senha, hoje verificada no CI.
 
+**[Fluiggers](https://github.com/fluiggers/fluig-vscode-extension)** (MIT, © Bruno Gasparetto e
+colaboradores) — a extensão VS Code da comunidade. Daqui vem o comportamento que
+[`src/datasetFiltros.js`](src/datasetFiltros.js) reproduz: a tradução de condições de consulta de
+dataset para as constraints do Fluig. As rotas de eventos de processo em [`src/client.js`](src/client.js)
+usam o FluiggersWidget, publicado pelo projeto deles ([fluig-widget-helper](https://github.com/fluiggers/fluig-widget-helper)).
+
 ## Licença
 
 [MIT](LICENSE).
