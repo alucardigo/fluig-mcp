@@ -37,9 +37,11 @@ cofre (`secret-tool`, `security`, `pass`, `op`), executado sem shell — veja
 
 ### Escrita
 
-- As ferramentas de escrita estruturais e destrutivas exigem `confirm: true`. Doze operacionais
-  ainda não exigem (lista no README, seção Segurança) — e `confirm` é uma declaração do modelo,
-  não um portão humano: o portão humano é a aprovação de ferramenta do cliente MCP.
+- Toda ferramenta de escrita declara `confirm`. As estruturais e destrutivas o exigem em qualquer
+  ambiente; doze do ciclo de desenvolvimento (lista no README, seção Segurança) o exigem só em
+  produção. `confirm` precisa ser booleano: `"false"` em texto é recusado. E `confirm` é uma
+  declaração do modelo, não um portão humano: o portão humano é a aprovação de ferramenta do
+  cliente MCP.
 - As destrutivas (`fluig_process_convert_instances`, `fluig_rm_save_record`) devolvem **dry-run**
   com o plano antes de executar.
 - `FLUIG_READONLY=1` remove as 37 ferramentas de escrita da listagem e passa a recusá-las. Use
@@ -55,6 +57,13 @@ conteúdo vem do servidor e o caminho vem do agente: sem esse limite, um anexo c
 plantada poderia ser gravado em `~/.bashrc` ou num hook do git. Caminho fora da pasta é recusado,
 links simbólicos e junctions são conferidos pelo caminho real, e a gravação por temporário +
 `rename` não segue link físico.
+
+O caminho do arquivo que **sobe** ao Fluig também vem do agente: `caminhoLocal`
+(`fluig_ged_upload`), `zipPath` (`fluig_form_create`), `xmlPath` e `svgPath`
+(`fluig_deploy_process`). Sem limite, um texto plantado numa ficha ou num anexo poderia induzir o
+agente a publicar `~/.ssh/id_rsa` no GED. Esses arquivos só são lidos de dentro da mesma pasta,
+conferidos pelo caminho real e abertos sem seguir link. Um link físico dentro da pasta é lido como
+qualquer arquivo dela: criar um exige escrita local na pasta.
 
 ### Ferramentas de leitura que escrevem
 

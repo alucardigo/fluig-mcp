@@ -5,8 +5,9 @@ Para homologação, troque os nomes por `FLUIG_HOST`, `FLUIG_USER` e `FLUIG_PASS
 
 Comece com `FLUIG_READONLY=1` e tire quando precisar escrever.
 
-As ferramentas com `destino` (XML de processo, fonte de dataset) gravam em `~/fluig-mcp-saida`; para outra pasta,
-acrescente `FLUIG_SAIDA_DIR` ao `env`.
+As ferramentas com `destino` (XML de processo, fonte de dataset) gravam em `~/fluig-mcp-saida`, e as que sobem
+arquivo ao Fluig (GED, formulário, deploy de processo) só leem de lá; para outra pasta, acrescente
+`FLUIG_SAIDA_DIR` ao `env`.
 
 ## De onde vem o pacote
 
