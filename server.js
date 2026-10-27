@@ -203,12 +203,14 @@ const TOOLS = [
   },
   {
     name: 'fluig_globalevent_delete',
-    description: '⚠️ ESCRITA/DESTRUTIVO e IRREVERSÍVEL. Apaga UM evento global pelo id (eventId); os demais eventos não são afetados. Exige confirm=true em qualquer ambiente.',
+    description: '⚠️ ESCRITA/DESTRUTIVO e IRREVERSÍVEL. Apaga UM evento global pelo id (eventId); os demais eventos não são afetados. '
+      + 'Sem confirm=true devolve o DRY-RUN: o evento que seria apagado, com o código, sem apagar nada. '
+      + 'Com confirm=true apaga e devolve o código apagado (eventoApagado), para restaurar com fluig_globalevent_save.',
     inputSchema: S({
       eventId: str('id do evento global a apagar'),
-      confirm: { type: 'boolean', description: 'obrigatório true' },
-    }, ['eventId', 'confirm']),
-    handler: async ({ eventId }) => client.deleteGlobalEvent(eventId),
+      confirm: { type: 'boolean', description: 'true apaga de verdade; sem isso devolve o dry-run' },
+    }, ['eventId']),
+    handler: async ({ eventId, confirm }) => client.deleteGlobalEvent(eventId, { confirm: confirm === true }),
   },
   {
     name: 'fluig_workflow_check',
@@ -1245,13 +1247,6 @@ const CONFIRM_EM_PROD = new Set([
   'fluig_job_add', 'fluig_job_delete', 'fluig_job_run',
 ]);
 
-/**
- * Escritas DESTRUTIVAS: exigem confirm:true em QUALQUER ambiente, e não só em produção. Apagar não tem
- * volta, e o CONTRIBUTING e o README mandam exigir confirm em todo ambiente nesse caso. Por isso não
- * entram em CONFIRM_EM_PROD, que é só para o ciclo de desenvolvimento que passa direto em homologação.
- */
-const CONFIRM_SEMPRE = new Set(['fluig_globalevent_delete']);
-
 for (const t of TOOLS) {
   if (!CONFIRM_EM_PROD.has(t.name)) continue;
   t.inputSchema.properties.confirm = {
@@ -1276,6 +1271,7 @@ Ambiente (nenhum tem default — veja .env.example):
 
   FLUIG_PASS_CMD    comando que imprime a senha (cofre do sistema); vale a primeira linha.
   FLUIG_COOKIE_CMD  comando que imprime o cookie de sessão (MFA ou SSO): sem senha e sem login.do.
+  FLUIG_COOKIE_TIMEOUT_MS  espera máxima desse comando, em ms (padrão 120000: tempo para aprovar o MFA).
   FLUIG_READONLY=1  expõe SOMENTE as ferramentas que não alteram o servidor.
   FLUIG_SAIDA_DIR   pasta onde destino grava e de onde sai o arquivo que sobe ao Fluig
                     (caminhoLocal, zipPath, xmlPath, svgPath). Padrão: ~/fluig-mcp-saida.
@@ -1353,9 +1349,6 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       if (CONFIRM_EM_PROD.has(tool.name) && args.env === 'prod' && args.confirm !== true) {
         throw new Error(`${tool.name} altera o servidor de PRODUÇÃO e exige confirm:true. `
           + 'Em homologação (env="teste") passa direto.');
-      }
-      if (CONFIRM_SEMPRE.has(tool.name) && args.confirm !== true) {
-        throw new Error(`${tool.name} é destrutiva e exige confirm:true em qualquer ambiente. Nada foi alterado.`);
       }
       // Texto que saiu cortado de uma leitura (ver src/saida.js) não volta para o Fluig.
       recusarCortado(args, '');

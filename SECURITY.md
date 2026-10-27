@@ -42,8 +42,8 @@ cofre (`secret-tool`, `security`, `pass`, `op`), executado sem shell — veja
   produção. `confirm` precisa ser booleano: `"false"` em texto é recusado. E `confirm` é uma
   declaração do modelo, não um portão humano: o portão humano é a aprovação de ferramenta do
   cliente MCP.
-- As destrutivas (`fluig_process_convert_instances`, `fluig_rm_save_record`) devolvem **dry-run**
-  com o plano antes de executar.
+- As destrutivas (`fluig_process_convert_instances`, `fluig_rm_save_record`, `fluig_globalevent_delete`)
+  devolvem **dry-run** com o plano antes de executar: sem `confirm: true`, nada é alterado.
 - `FLUIG_READONLY=1` remove as 37 ferramentas de escrita da listagem e passa a recusá-las. Use
   isso para agente sem supervisão.
 - `env` é obrigatório em toda chamada. Não existe ambiente default — é o que impede escrever em
