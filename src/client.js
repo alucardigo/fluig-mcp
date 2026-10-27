@@ -712,6 +712,27 @@ export class FluigClient {
     });
   }
 
+  /**
+   * APAGA um evento global pelo id. A rota aceita um evento por chamada, e cada chamada leva o seu
+   * próprio nome: excluir vários com um forEach assíncrono é o que fazia só o último sumir (issue 97
+   * da extensão Fluiggers). Sucesso é `content: 'OK'` exato; qualquer outra resposta é erro, e o
+   * erro leva a mensagem do servidor, porque apagar não tem volta.
+   */
+  async deleteGlobalEvent(eventId) {
+    if (typeof eventId !== 'string' || !eventId.trim()) {
+      throw new Error('deleteGlobalEvent: eventId obrigatório (texto não vazio). Nada foi apagado.');
+    }
+    const r = await this._rest(
+      `/ecm/api/rest/ecm/globalevent/deleteGlobalEvent?eventName=${encodeURIComponent(eventId)}`,
+      { method: 'DELETE' },
+    );
+    if (r?.content === 'OK') return r;
+    const motivo = r?.message
+      || (typeof r?.content === 'string' ? r.content : null)
+      || (r?._raw !== undefined ? `HTTP ${r._status}, resposta não-JSON` : JSON.stringify(r));
+    throw new Error(`deleteGlobalEvent(${eventId}): o servidor não confirmou a exclusão — ${motivo}`);
+  }
+
   // ---------- Workflow (eventos de processo — requer FluiggersWidget) ----------
   async hasFluiggersWidget() {
     const cookie = await this.login();

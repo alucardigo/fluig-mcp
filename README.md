@@ -248,9 +248,10 @@ Para reportar vulnerabilidade, veja [SECURITY.md](SECURITY.md).
 `fluig_rm_query` · **!** `fluig_rm_db_query` · **!** `fluig_rm_db_exec` ·
 **!** `fluig_rm_dataserver_schema` · **!** `fluig_rm_save_record` · **!** `fluig_service_list`
 
-**Agendador** (4) · **Eventos globais** (2) · **Diagnóstico** (7)
+**Agendador** (4) · **Eventos globais** (3) · **Diagnóstico** (7)
 `fluig_jobs_list` · **!** `fluig_job_add` · **!** `fluig_job_delete` · **!** `fluig_job_run` ·
-`fluig_globalevent_list` · **!** `fluig_globalevent_save` · `fluig_ping` · `fluig_version` ·
+`fluig_globalevent_list` · **!** `fluig_globalevent_save` · **!** `fluig_globalevent_delete` ·
+`fluig_ping` · `fluig_version` ·
 `fluig_session_reset` · `fluig_user_replacements` · `fluig_rest_get` · **!** `fluig_rest_post` ·
 **!** `fluig_db_query`
 
