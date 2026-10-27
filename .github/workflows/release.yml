@@ -151,7 +151,7 @@ jobs:
             {
               echo "### fluig-mcp@$VERSAO aguardando aprovação no npm"
               echo
-              echo "Aprove com 2FA em https://www.npmjs.com/settings/~/packages/staged (aba Staged Packages)"
+              echo "Aprove com 2FA em npmjs.com → menu da conta → Staged Packages"
               echo "ou com \`npm stage approve <id>\`. Saída do npm:"
               echo
               echo '```'
