@@ -3,7 +3,7 @@
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/);
 versionamento [SemVer](https://semver.org/lang/pt-BR/).
 
-## [1.1.0] — 2026-10-26
+## [1.1.0] — 2026-10-27
 
 Contribuições da comunidade: a proposta e os PRs de
 [Gian (@kyso1)](https://github.com/kyso1) — [issue #3](https://github.com/alucardigo/fluig-mcp/issues/3),
@@ -37,7 +37,9 @@ Validado contra um Fluig 1.7.1 de produção (pelos autores) e um Fluig 1.8 de h
 - `destino` e `maxChars` nas ferramentas que devolvem texto grande
   ([#7](https://github.com/alucardigo/fluig-mcp/pull/7), @kyso1).
 - `fluig_version` mostra o `colleagueId` em uso e de onde ele veio.
-- Workflow de release com provenance (`npm publish --provenance` a partir de tag).
+- Releases: publicar um Release no GitHub anexa o tarball do pacote (com SHA-256), publica
+  `@alucardigo/fluig-mcp` no GitHub Packages e, com a publicação no npm ligada, `fluig-mcp` no
+  npmjs.com com provenance.
 
 ### Corrigido
 
@@ -75,10 +77,13 @@ Validado contra um Fluig 1.7.1 de produção (pelos autores) e um Fluig 1.8 de h
 - `FLUIG_PASS_CMD` usa só a primeira linha da saída, recusa saída fora de UTF-8 antes do login e
   nunca mostra o stdout no erro.
 - Ferramentas de escrita recusam texto que saiu cortado de uma leitura.
-- Dependências: `@modelcontextprotocol/sdk` 1.32.1 e `undici` 6.29.1 corrigem 10 das 12
-  vulnerabilidades do `npm audit` (inclusive a crítica). As 2 restantes (`body-parser`,
-  `fast-uri`) vêm do transporte HTTP do SDK, que este servidor não carrega, e as correções têm menos
-  de uma semana — entram pelo Dependabot.
+- Dependências: `npm audit` zerado (eram 12 vulnerabilidades, 1 crítica e 8 altas).
+  `@modelcontextprotocol/sdk` 1.32.1, `undici` 6.29.1 (ainda na linha 6, por causa do Node 20),
+  `body-parser` 2.4.0 e `fast-uri` 3.1.9. `soap` 1.14.0, conferido contra um Fluig real: as
+  chamadas SOAP de leitura devolvem exatamente o mesmo que na 1.10.
+- CI e release: actions fixadas por SHA (`checkout` 7, `setup-node` 7, `gitleaks-action` 3 — a v2
+  rodava em Node 20, que saiu dos runners do GitHub), Dependabot semanal com uma semana de espera,
+  reporte privado de vulnerabilidade ligado.
 - README, SECURITY e CONTRIBUTING não prometem mais `confirm` em toda escrita: 12 ferramentas
   operacionais ainda não o exigem, e a lista está no README.
 
