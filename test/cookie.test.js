@@ -194,6 +194,16 @@ test('FLUIG_COOKIE_TIMEOUT_MS: padrão de 2 minutos, e valor que não é inteiro
   }
 });
 
+test('FLUIG_COOKIE_TIMEOUT_MS só é validado no ambiente que usa cookie', () => {
+  // A variável vale para os dois ambientes: um valor ruim não pode impedir o ambiente que usa senha de subir.
+  const senha = { ...BASE, FLUIG_PASS: 'x', FLUIG_COOKIE_TIMEOUT_MS: 'abc' };
+  assert.doesNotThrow(() => loadConfig('teste', senha));
+  assert.equal(loadConfig('teste', senha).cookieCmd, null);
+  // Produção com cookie ainda recusa o mesmo valor.
+  const cookieProd = { FLUIG_HOST_PROD: 'https://fluig.exemplo.com.br:8443', FLUIG_USER_PROD: 'fulano', FLUIG_COOKIE_CMD_PROD: 'cofre --cookie', FLUIG_COOKIE_TIMEOUT_MS: 'abc' };
+  assert.throws(() => loadConfig('prod', cookieProd), /FLUIG_COOKIE_TIMEOUT_MS/);
+});
+
 test('saída sem cookie de sessão é erro, e a saída não aparece na mensagem', async () => {
   const { c, logins, chamadas } = clienteFalso({ FLUIG_COOKIE_CMD: imprime('segredo-sem-cookie') });
   await assert.rejects(() => c.login(), (e) =>
