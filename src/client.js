@@ -537,13 +537,13 @@ export class FluigClient {
     // Sessão expirada (401, página de login ou o desvio SAML do Fluig Identity) não é bloqueio
     // de rede: loga de novo e repete UMA vez. Se continuar expirada, devolve o _raw em vez de
     // insistir — novo login em laço gastaria tentativas do AD.
-    // Com semRepetir (escrita que não pode ser mandada duas vezes), a página de bloqueio também não é
-    // reenviada: volta como _raw, e quem chamou confere o efeito antes de concluir qualquer coisa.
+    // Com semRepetir (escrita que não pode ser mandada duas vezes), nem a página de bloqueio nem a sessão
+    // expirada são reenviadas: a resposta volta como _raw, e quem chamou confere o efeito antes de concluir.
     let relogou = false;
     for (let attempt = 0; attempt < 3; attempt++) {
       const r = await this._fetch(path, { method, headers, body, semRepetir });
       const text = await r.text();
-      if (!relogou && sessaoExpirada(r.status, text, r.headers?.get?.('content-type'))) {
+      if (!relogou && !semRepetir && sessaoExpirada(r.status, text, r.headers?.get?.('content-type'))) {
         relogou = true;
         this._descartarSessao(headers.Cookie);
         headers.Cookie = await this.login();

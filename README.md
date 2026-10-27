@@ -4,19 +4,19 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![npm](https://img.shields.io/npm/v/fluig-mcp)](https://www.npmjs.com/package/fluig-mcp)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-informational)](package.json)
-[![Ferramentas](https://img.shields.io/badge/ferramentas-97-success)](#as-ferramentas)
+[![Ferramentas](https://img.shields.io/badge/ferramentas-98-success)](#as-ferramentas)
 
 Servidor [MCP](https://modelcontextprotocol.io) para o **TOTVS Fluig**. Dá a um agente de IA —
 Claude Code, Claude Desktop, Cursor, ou qualquer cliente MCP — acesso às APIs REST e SOAP do
 Fluig: datasets, formulários, fichas, GED, eventos, agendador, processos BPM e a ponte para o
 TOTVS RM (Corpore).
 
-**97 ferramentas**, homologação e produção no mesmo servidor, sem abrir o Fluig Studio.
+**98 ferramentas**, homologação e produção no mesmo servidor, sem abrir o Fluig Studio.
 
 ```
 ┌──────────────┐      stdio/MCP      ┌───────────┐   REST v1/v2   ┌──────────────┐
 │ Claude Code  │ ◄─────────────────► │ fluig-mcp │ ◄────────────► │ TOTVS Fluig  │
-│  (ou outro)  │                     │ 97 tools  │   SOAP/WSDL    │   + RM       │
+│  (ou outro)  │                     │ 98 tools  │   SOAP/WSDL    │   + RM       │
 └──────────────┘                     └───────────┘                └──────────────┘
 ```
 
