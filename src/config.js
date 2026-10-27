@@ -17,6 +17,10 @@
  * No lugar da senha, FLUIG_PASS_CMD / FLUIG_PASS_CMD_PROD: um comando que a imprime, para ela ficar no
  * cofre do sistema e não em texto puro no config do cliente MCP (ver senhaDoComando).
  *
+ * Tenant com MFA ou SSO, em que o login com usuário e senha não serve: FLUIG_COOKIE_CMD /
+ * FLUIG_COOKIE_CMD_PROD é um comando que imprime o cookie de sessão já aberto. Aí não há senha, e o
+ * cliente nunca chama login.do (ver cookieDoComando e FluigClient._sessaoDoCookie).
+ *
  * ⚠️ A credencial de produção NÃO cai na de homologação. Esse fallback existia e era uma
  *    armadilha: mandava a senha de homologação contra produção e queimava tentativas do
  *    Active Directory — o suficiente para bloquear a conta do usuário.
@@ -70,9 +74,28 @@ function motivoDaFalha(e) {
     motivo += '; no Windows, .cmd/.bat não rodam sem shell: aponte para o .exe ou use '
       + 'powershell.exe -NoProfile -Command "..." (veja docs/clientes.md)';
   }
-  const erro = String(e.stderr ?? '').replace(/\s+/g, ' ').trim();
+  // Cookie de sessão também é segredo: se o comando falhou depois de imprimi-lo no stderr, não vai à mensagem.
+  const erro = String(e.stderr ?? '').replace(/\s+/g, ' ').trim()
+    .replace(/(JSESSIONIDSSO|jwt\.token)=\S+/g, '$1=…');
   if (!erro) return motivo;
   return `${motivo}: ${erro.length > 200 ? `${erro.slice(0, 200)}…` : erro}`;
+}
+
+/**
+ * Roda um comando sem shell e devolve a saída inteira. Compartilhado por senha e cookie: o que muda entre
+ * os dois é o que se faz com a saída, não como o comando roda. Falha aqui é erro ANTES de qualquer login.
+ */
+function rodarComando(linha, variavel) {
+  const [cmd, ...args] = dividirComando(linha);
+  if (!cmd) throw new Error(`${variavel} está vazia.`);
+  try {
+    // windowsHide: chamado por um cliente MCP sem console, o powershell.exe abriria uma janela piscando.
+    return execFileSync(cmd, args, {
+      encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+    });
+  } catch (e) {
+    throw new Error(`${variavel}: o comando falhou (${motivoDaFalha(e)}) — não vou tentar o login.`);
+  }
 }
 
 /**
@@ -81,17 +104,7 @@ function motivoDaFalha(e) {
  * tentar com senha vazia ou errada queimaria uma das tentativas do AD.
  */
 function senhaDoComando(linha, variavel) {
-  const [cmd, ...args] = dividirComando(linha);
-  if (!cmd) throw new Error(`${variavel} está vazia.`);
-  let saida;
-  try {
-    // windowsHide: chamado por um cliente MCP sem console, o powershell.exe abriria uma janela piscando.
-    saida = execFileSync(cmd, args, {
-      encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
-    });
-  } catch (e) {
-    throw new Error(`${variavel}: o comando falhou (${motivoDaFalha(e)}) — não vou tentar o login.`);
-  }
+  const saida = rodarComando(linha, variavel);
   // Só a primeira linha: é a convenção do pass/gopass (as seguintes são metadados como "login:"), e
   // mandar a saída inteira gastaria uma tentativa do AD com a senha errada.
   const senha = saida.split(/\r?\n/, 1)[0];
@@ -105,6 +118,22 @@ function senhaDoComando(linha, variavel) {
     );
   }
   return senha;
+}
+
+/**
+ * Cookie de sessão lido da saída de um comando (FLUIG_COOKIE_CMD). Diferente da senha, a saída inteira
+ * conta: o cookie pode vir em mais de uma linha, e as linhas são unidas com "; " como no header Cookie.
+ *
+ * Sem JSESSIONIDSSO nem jwt.token não é cookie de sessão, e a saída NÃO entra na mensagem: ela pode ser
+ * um cookie quase certo, e cookie não pode ir para log nem para o retorno de uma ferramenta.
+ */
+export function cookieDoComando(linha, variavel = 'FLUIG_COOKIE_CMD') {
+  const saida = rodarComando(linha, variavel);
+  const cookie = saida.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).join('; ');
+  if (!/JSESSIONIDSSO=|jwt\.token=/.test(cookie)) {
+    throw new Error(`${variavel}: o comando não devolveu cookie de sessão (JSESSIONIDSSO ou jwt.token).`);
+  }
+  return cookie;
 }
 
 /** Valida e normaliza a URL base do portal. */
@@ -146,28 +175,44 @@ export function loadConfig(alvo = 'teste', env = process.env) {
   const vUser = isProd ? 'FLUIG_USER_PROD' : 'FLUIG_USER';
   const vPass = isProd ? 'FLUIG_PASS_PROD' : 'FLUIG_PASS';
   const vCmd = isProd ? 'FLUIG_PASS_CMD_PROD' : 'FLUIG_PASS_CMD';
+  const vCookie = isProd ? 'FLUIG_COOKIE_CMD_PROD' : 'FLUIG_COOKIE_CMD';
   const definida = (k) => !!env[k] && !!String(env[k]).trim();
+  // Com cookie, a senha não existe no modo: nenhuma tentativa de login.do sai, nem por fallback.
+  const comCookie = definida(vCookie);
 
   if (definida(vPass) && definida(vCmd)) {
     throw new Error(`Defina ${vPass} ou ${vCmd}, não os dois: com os dois, qual senha vale ficaria escondido.`);
   }
+  if (comCookie && (definida(vPass) || definida(vCmd))) {
+    throw new Error(
+      `Defina ${vCookie} ou a senha (${vPass} ou ${vCmd}), não os dois: no modo cookie a senha nunca é usada, `
+      + 'e ela ficaria escondida.',
+    );
+  }
   const faltando = [vHost, vUser].filter((k) => !definida(k));
-  if (!definida(vPass) && !definida(vCmd)) faltando.push(`${vPass} (ou ${vCmd})`);
+  if (!comCookie && !definida(vPass) && !definida(vCmd)) faltando.push(`${vPass} (ou ${vCmd})`);
   if (faltando.length) {
     throw new Error(
       `Ambiente "${alvo}" não configurado — faltam: ${faltando.join(', ')}. `
       + 'Defina no config do seu cliente MCP ou no shell (veja .env.example). '
+      + (comCookie ? '' : `Em tenant com MFA ou SSO, use ${vCookie} no lugar da senha. `)
       + 'Não há default: um host ou senha embutidos seriam um vazamento.',
     );
   }
+  // Só a sintaxe é conferida aqui (aspas abertas). O comando roda no primeiro login, e de novo a cada
+  // fluig_session_reset: não há cookie guardado na configuração.
+  if (comCookie) dividirComando(String(env[vCookie]));
 
   const user = String(env[vUser]).trim();
+  let pass = '';
+  if (!comCookie) pass = definida(vCmd) ? senhaDoComando(env[vCmd], vCmd) : String(env[vPass]);
   return {
     env: alvo,
     isProd,
     host: parseHost(env[vHost], vHost),
     user,
-    pass: definida(vCmd) ? senhaDoComando(env[vCmd], vCmd) : String(env[vPass]),
+    pass,
+    cookieCmd: comCookie ? String(env[vCookie]).trim() : null,
     companyId: Number(env[isProd ? 'FLUIG_COMPANY_PROD' : 'FLUIG_COMPANY'] ?? env.FLUIG_COMPANY ?? 1),
     // Vazio = descobrir pela sessão no primeiro login (ver FluigClient._descobrirUserCode). O código
     // do colaborador costuma ser a matrícula, diferente do login; usar o login no lugar dele faz as
