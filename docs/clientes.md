@@ -10,21 +10,19 @@ acrescente `FLUIG_SAIDA_DIR` ao `env`.
 
 ## De onde vem o pacote
 
-O pacote ainda não está no npm: os exemplos rodam direto do GitHub, com
-`npx -y --allow-git=root github:alucardigo/fluig-mcp`. O npm 12 recusa pacote vindo do git por padrão
-(`allow-git` passou a valer `none`); `--allow-git=root` libera o git só para o pacote pedido, não para as
-dependências dele.
+Os exemplos usam o pacote do [npm](https://www.npmjs.com/package/fluig-mcp) com a versão fixada:
+`npx -y fluig-mcp@1.1.0`. **Fixe sempre a versão**: sem ela, cada subida busca a última publicada, com a
+sua senha de produção no ambiente. Para atualizar, troque o número quando decidir (veja as
+[releases](https://github.com/alucardigo/fluig-mcp/releases)).
 
-**Sem versão fixada, cada subida roda o que estiver na `main` naquele momento**, com a sua senha de
-produção no ambiente. Para atualizar só quando você decidir, fixe uma tag de
-[release](https://github.com/alucardigo/fluig-mcp/releases) ou um commit no lugar do endereço:
+Cada versão sai do CI deste repositório com provenance e só fica pública depois de aprovada com 2FA.
+Para conferir de onde veio: `npm view fluig-mcp@1.1.0 dist.attestations`.
 
-```
-github:alucardigo/fluig-mcp#v1.1.0
-github:alucardigo/fluig-mcp#<hash-do-commit>
-```
+Quem prefere instalar direto do GitHub pode trocar `fluig-mcp@1.1.0` por
+`--allow-git=root github:alucardigo/fluig-mcp#v1.1.0`. O npm 12 recusa pacote vindo do git por padrão,
+e `--allow-git=root` libera o git só para o pacote pedido, não para as dependências dele.
 
-A primeira subida clona e instala o pacote e pode demorar mais que o tempo de inicialização padrão do
+A primeira subida baixa e instala o pacote e pode demorar mais que o tempo de inicialização padrão do
 cliente; cada seção abaixo diz como aumentá-lo.
 
 ## Claude Code
@@ -35,7 +33,7 @@ claude mcp add fluig --scope user \
   -e FLUIG_USER_PROD=seu.usuario \
   -e FLUIG_PASS_CMD_PROD="secret-tool lookup service fluig-prod user seu.usuario" \
   -e FLUIG_READONLY=1 \
-  -- npx -y --allow-git=root github:alucardigo/fluig-mcp
+  -- npx -y fluig-mcp@1.1.0
 ```
 
 - `--scope user` vale em todos os projetos. Sem ele, o padrão é `local`: só o diretório onde você rodou o
@@ -54,7 +52,7 @@ codex mcp add fluig \
   --env FLUIG_USER_PROD=seu.usuario \
   --env "FLUIG_PASS_CMD_PROD=secret-tool lookup service fluig-prod user seu.usuario" \
   --env FLUIG_READONLY=1 \
-  -- npx -y --allow-git=root github:alucardigo/fluig-mcp
+  -- npx -y fluig-mcp@1.1.0
 ```
 
 O `codex mcp add` não define `startup_timeout_sec`, cujo padrão é 10 s: pouco para a primeira subida pelo
@@ -64,7 +62,7 @@ npx. Depois do comando, acrescente `startup_timeout_sec = 60` em `[mcp_servers.f
 ```toml
 [mcp_servers.fluig]
 command = "npx"
-args = ["-y", "--allow-git=root", "github:alucardigo/fluig-mcp"]
+args = ["-y", "fluig-mcp@1.1.0"]
 startup_timeout_sec = 60
 
 [mcp_servers.fluig.env]
@@ -88,7 +86,7 @@ senha na primeira vez que o servidor sobe e a guarda no armazenamento seguro del
     "fluig": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "--allow-git=root", "github:alucardigo/fluig-mcp"],
+      "args": ["-y", "fluig-mcp@1.1.0"],
       "env": {
         "FLUIG_HOST_PROD": "https://fluig.suaempresa.com.br",
         "FLUIG_USER_PROD": "seu.usuario",
@@ -114,7 +112,7 @@ Os dois usam o mesmo formato (`mcpServers`). O arquivo fica em:
   "mcpServers": {
     "fluig": {
       "command": "npx",
-      "args": ["-y", "--allow-git=root", "github:alucardigo/fluig-mcp"],
+      "args": ["-y", "fluig-mcp@1.1.0"],
       "env": {
         "FLUIG_HOST_PROD": "https://fluig.suaempresa.com.br",
         "FLUIG_USER_PROD": "seu.usuario",
@@ -161,7 +159,7 @@ dentro do `powershell.exe -NoProfile -Command`.
 
 **Linha de comando.** Os exemplos em bash quebram linha com `\`; no PowerShell, escreva o `claude mcp add`
 ou o `codex mcp add` numa linha só. Se o servidor não conectar com `spawn npx ENOENT`, use `cmd /c npx`
-como comando (`-- cmd /c npx -y --allow-git=root github:alucardigo/fluig-mcp`), rodando o comando no
+como comando (`-- cmd /c npx -y fluig-mcp@1.1.0`), rodando o comando no
 PowerShell e não no Git Bash, que transforma o `/c` em `C:/`.
 
 ## Conferindo

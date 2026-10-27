@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/alucardigo/fluig-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/alucardigo/fluig-mcp/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![npm](https://img.shields.io/npm/v/fluig-mcp)](https://www.npmjs.com/package/fluig-mcp)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-informational)](package.json)
 [![Ferramentas](https://img.shields.io/badge/ferramentas-97-success)](#as-ferramentas)
 
@@ -33,17 +34,18 @@ cada uma na marra.
 
 ## Instalação
 
-Requer **Node.js 20+**. O pacote ainda não está no npm; sem clonar nada, direto do GitHub (o
-`--allow-git=root` é preciso no npm 12, que recusa pacote vindo do git por padrão; ele libera só este
-pacote, não as dependências):
+Requer **Node.js 20+**. Direto do [npm](https://www.npmjs.com/package/fluig-mcp), sem clonar nada:
 
 ```bash
-npx -y --allow-git=root github:alucardigo/fluig-mcp --list
+npx -y fluig-mcp@1.1.0 --list
 ```
 
-Sem versão fixada, o `npx` roda o que estiver na `main` a cada subida. Para atualizar só quando você
-decidir, fixe uma tag de release ou um commit: `github:alucardigo/fluig-mcp#v1.1.0` (ver
-[docs/clientes.md](docs/clientes.md#de-onde-vem-o-pacote)).
+**Fixe a versão.** Sem ela, o `npx` busca a última publicada a cada subida, num processo que recebe a
+sua senha de produção; com ela, você atualiza quando decidir. Cada versão sai do CI deste repositório
+com [provenance](https://docs.npmjs.com/generating-provenance-statements) e só fica pública depois de
+aprovada com 2FA — confira com `npm view fluig-mcp@1.1.0 dist.attestations`. Também dá para instalar
+pelo tarball anexado a cada [Release](https://github.com/alucardigo/fluig-mcp/releases) ou direto do
+GitHub (ver [docs/clientes.md](docs/clientes.md#de-onde-vem-o-pacote)).
 
 Ou clonando, para ler o código antes:
 
