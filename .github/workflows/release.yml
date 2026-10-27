@@ -100,9 +100,17 @@ jobs:
           scope: '@alucardigo'
       # O registro do GitHub só aceita pacote com o escopo do dono; o nome muda só nesta cópia.
       - run: npm pkg set name=@alucardigo/fluig-mcp
-      - run: npm publish
+      # Idempotente: rodar de novo o Release (ex.: para ligar o npm depois) não falha aqui.
+      - name: Publica, se a versão ainda não estiver lá
         env:
           NODE_AUTH_TOKEN: ${{ github.token }}
+          VERSAO: ${{ needs.verificar.outputs.versao }}
+        run: |
+          if npm view "@alucardigo/fluig-mcp@$VERSAO" version >/dev/null 2>&1; then
+            echo "@alucardigo/fluig-mcp@$VERSAO já está no GitHub Packages"
+          else
+            npm publish
+          fi
 
   npm:
     needs: verificar
@@ -122,6 +130,13 @@ jobs:
         with:
           node-version: '24'
           registry-url: https://registry.npmjs.org
-      - run: npm publish --provenance --access public
+      - name: Publica, se a versão ainda não estiver lá
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSAO: ${{ needs.verificar.outputs.versao }}
+        run: |
+          if npm view "fluig-mcp@$VERSAO" version >/dev/null 2>&1; then
+            echo "fluig-mcp@$VERSAO já está no npm"
+          else
+            npm publish --provenance --access public
+          fi
