@@ -53,6 +53,7 @@ test('upload para o GED que volta 200 com a página de SSO é erro, não "ok"', 
   const arquivo = join(dir, 'a.txt');
   writeFileSync(arquivo, 'x');
   const c = novoCliente();
+  c.saidaDir = dir; // o upload só lê de dentro da pasta de saída
   c._cookie = 'JSESSIONIDSSO=s1';
   c._cookieAt = Date.now();
   c._fetch = async () => ({
