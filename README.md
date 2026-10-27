@@ -72,6 +72,7 @@ servidor de outra pessoa.
 | `FLUIG_HOST` · `FLUIG_USER` · `FLUIG_PASS` (ou `FLUIG_PASS_CMD`) | homologação (`env: "teste"`) | para usar homologação |
 | `FLUIG_HOST_PROD` · `FLUIG_USER_PROD` · `FLUIG_PASS_PROD` (ou `FLUIG_PASS_CMD_PROD`) | produção (`env: "prod"`) | para usar produção |
 | `FLUIG_PASS_CMD` · `FLUIG_PASS_CMD_PROD` | no lugar da senha: comando que a imprime (cofre do sistema) | não |
+| `FLUIG_COOKIE_CMD` · `FLUIG_COOKIE_CMD_PROD` | no lugar da senha, para tenant com MFA ou SSO: comando que imprime o cookie de sessão (sem `login.do`) | não |
 | `FLUIG_USERCODE` · `FLUIG_USERCODE_PROD` | código do colaborador; sem ele, é descoberto pela sessão | não |
 | `FLUIG_SAIDA_DIR` | pasta onde `destino` grava e de onde sai o arquivo que sobe ao Fluig (`caminhoLocal`, `zipPath`, `xmlPath`, `svgPath`); padrão `~/fluig-mcp-saida`, fora dela é recusado | não |
 | `FLUIG_READONLY=1` | ambos | não — mas leia [Segurança](#segurança) |
@@ -108,6 +109,23 @@ se ele pedir desbloqueio, é a hora). Trocou a senha no cofre? Reinicie o client
 
 No GitHub Copilot (VS Code) não precisa disso: o próprio VS Code pede a senha e a guarda (exemplo em
 [docs/clientes.md](docs/clientes.md#github-copilot-vs-code)).
+
+### Tenant com MFA ou SSO: cookie de sessão
+
+Quando o login com usuário e senha não serve (MFA ou SSO), `FLUIG_COOKIE_CMD` (e `FLUIG_COOKIE_CMD_PROD`)
+recebe um comando que imprime o cookie de sessão já aberto: `JSESSIONIDSSO=…` ou `jwt.token=…`. Roda sem
+shell, com as mesmas regras de aspas do `FLUIG_PASS_CMD`, e a saída inteira é lida. Nesse modo:
+
+- não há senha, e o cliente **nunca** chama `login.do` nem tenta a senha, nem quando o cookie falha. Cada
+  tentativa de senha recusada pelo servidor conta contra o bloqueio da conta;
+- cookie recusado dá erro com a instrução de gerar outro e rodar `fluig_session_reset`. O comando não roda
+  de novo sozinho na mesma chamada: o reset é o que libera a próxima execução;
+- `fluig_version` mostra só os nomes dos cookies, nunca o valor;
+- as operações que falam com os serviços SOAP do Fluig (`ECMDatasetService`, `ECMCardIndexService`,
+  `WorkflowEngineService` e `TokenService`) ficam indisponíveis e são recusadas antes de qualquer chamada,
+  porque levam usuário e senha no corpo da requisição. As que usam a API REST funcionam com o cookie.
+
+Não combine com `FLUIG_PASS` nem com `FLUIG_PASS_CMD` no mesmo ambiente: a configuração recusa a combinação.
 
 Configuração de cada cliente (Claude Code, Codex, GitHub Copilot, Cursor, Claude Desktop):
 [docs/clientes.md](docs/clientes.md).

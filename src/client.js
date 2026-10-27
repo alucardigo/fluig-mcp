@@ -6,6 +6,7 @@ import net from 'node:net';
 // UND_ERR_INVALID_ARG, porque o dispatcher precisa ser da mesma cópia da undici.
 import { Agent, fetch } from 'undici';
 import { conferirDestino, gravarNaSaida, lerNaSaida } from './saida.js';
+import { cookieDoComando } from './config.js';
 
 /**
  * Cliente da API do TOTVS Fluig — headless (sem IDE). Replica o protocolo da
@@ -46,6 +47,10 @@ async function retry(fn, tries = 4, baseMs = 400) {
 
 /** Cookie parado há mais que isto é revalidado com um ping antes de ser reaproveitado. */
 const SESSAO_REVALIDAR_MS = 20 * 60_000;
+
+/** Modo cookie (FLUIG_COOKIE_CMD) com o cookie recusado: o comando não roda de novo sozinho. */
+const COOKIE_EXPIRADO = 'cookie de sessão expirado: gere outro e rode fluig_session_reset '
+  + '(o comando de cookie não roda de novo nesta chamada).';
 
 /** Rota de versão do Studio: o diagnóstico (fluig_version) lê a versão do servidor daqui. */
 const ROTA_VERSAO_FLUIG = '/ecm/api/rest/ecm/studioWorkflowRest/version';
@@ -126,6 +131,10 @@ export class FluigClient {
     this.isProd = !!cfg.isProd;
     this.user = cfg.user;
     this.pass = cfg.pass;
+    // Modo cookie (FLUIG_COOKIE_CMD, para MFA ou SSO): a sessão vem de fora e nunca passa pelo login.do.
+    this.cookieCmd = cfg.cookieCmd || null;
+    this._varCookieCmd = cfg.isProd ? 'FLUIG_COOKIE_CMD_PROD' : 'FLUIG_COOKIE_CMD';
+    this._cookieExpirado = false;
     this.companyId = cfg.companyId;
     this.userCode = cfg.userCode || cfg.user;
     this._varUserCode = cfg.isProd ? 'FLUIG_USERCODE_PROD' : 'FLUIG_USERCODE';
@@ -276,6 +285,8 @@ export class FluigClient {
       }
       this._descartarSessao(visto);
     }
+    // Modo cookie: a sessão não passa pelo login.do, então a ausência de senha aqui é o esperado.
+    if (this.cookieCmd) return this._sessaoDoCookie();
     // Sem senha configurada, NÃO tentar: uma tentativa de login com credencial ausente/errada
     // gasta uma das 3 do lockoutThreshold do AD. Falhar aqui é de graça; falhar na rede custa
     // a conta do usuário (incidente de data omitida).
@@ -341,6 +352,24 @@ export class FluigClient {
   }
 
   /**
+   * Modo cookie (FLUIG_COOKIE_CMD, tenant com MFA ou SSO): o cookie vem de quem já se autenticou, e
+   * o cliente NÃO chama login.do nem cai para senha quando ele falha. Cada tentativa de senha recusada
+   * pelo servidor conta contra o bloqueio da conta.
+   *
+   * Cookie recusado não gera outro sozinho: _descartarSessao deixa a sessão marcada como expirada, e só
+   * fluig_session_reset libera outra execução do comando. Sem essa trava, um comando que devolve sempre o
+   * mesmo cookie velho faria laço dentro de uma única chamada.
+   */
+  async _sessaoDoCookie() {
+    if (this._cookieExpirado) throw new Error(COOKIE_EXPIRADO);
+    const cookie = cookieDoComando(this.cookieCmd, this._varCookieCmd);
+    this._cookie = cookie;
+    this._cookieAt = Date.now();
+    await this._descobrirUserCode(cookie);
+    return this._cookie || cookie;
+  }
+
+  /**
    * Descarta a sessão em memória. Os clientes SOAP vão junto: cada um carrega o cookie antigo
    * num header fixo e precisa ser recriado depois do novo login.
    *
@@ -352,6 +381,8 @@ export class FluigClient {
     this._cookie = null;
     this._cookieAt = 0;
     this._soap = {};
+    // No modo cookie, descartar é sessão recusada: o próximo login não roda o comando de novo.
+    if (this.cookieCmd) this._cookieExpirado = true;
   }
 
   /**
@@ -473,6 +504,12 @@ export class FluigClient {
    * raiz, que estava em DOIS lugares. O SOAP tinha ficado de fora.
    */
   async _soapClient(wsdlPath) {
+    // No modo cookie não há senha, e estas operações levam usuário e senha no corpo. Mandar a senha vazia
+    // seria uma tentativa de login que o servidor pode contar contra a conta: recusa antes de qualquer chamada.
+    if (this.cookieCmd) {
+      throw new Error(`Operação SOAP (${wsdlPath}) indisponível com ${this._varCookieCmd}: ela exige senha no corpo `
+        + 'da requisição, e o modo cookie não tem senha.');
+    }
     // login() ANTES do cache: é ele que revalida um cookie parado. O cliente em cache só vale
     // se foi criado com o cookie atual — cada cliente leva o cookie num header fixo.
     const cookie = await this.login();
@@ -1523,6 +1560,7 @@ export class FluigClient {
     const antes = this._cookie ? this._cookie.split('; ').map(c => c.split('=')[0]) : [];
     this._descartarSessao();
     this._loginRecusado = false; // liberação explícita de quem opera: UMA nova tentativa
+    this._cookieExpirado = false; // e, no modo cookie, UMA nova execução do comando
 
     this._bustIp?.();
     const novo = await this.login();

@@ -1275,6 +1275,7 @@ Ambiente (nenhum tem default — veja .env.example):
   Produção:     FLUIG_HOST_PROD  FLUIG_USER_PROD  FLUIG_PASS_PROD  (ou FLUIG_PASS_CMD_PROD)
 
   FLUIG_PASS_CMD    comando que imprime a senha (cofre do sistema); vale a primeira linha.
+  FLUIG_COOKIE_CMD  comando que imprime o cookie de sessão (MFA ou SSO): sem senha e sem login.do.
   FLUIG_READONLY=1  expõe SOMENTE as ferramentas que não alteram o servidor.
   FLUIG_SAIDA_DIR   pasta onde destino grava e de onde sai o arquivo que sobe ao Fluig
                     (caminhoLocal, zipPath, xmlPath, svgPath). Padrão: ~/fluig-mcp-saida.
