@@ -133,3 +133,29 @@ test('401 repetido depois do novo login vira erro curto, e o login não se repet
   assert.equal(srv.logins, 2, 'login inicial + UM novo login, como as demais chamadas REST');
   assert.equal(srv.chamadasVersao.length, 2, 'a requisição e UMA repetição');
 });
+
+test('consulta da versão que nunca responde vira erro de tempo limite, e o diagnóstico segue', { timeout: 15000 }, async () => {
+  const c = novoCliente();
+  c._versaoTimeoutMs = 50; // o limite de produção é 15 s; aqui o teste não pode esperar isso
+  servidorComVersao(c, [new Promise(() => {})]); // o servidor aceita a conexão e não responde
+
+  const info = await c.versionInfo();
+
+  assert.equal(info.servidorVersao, null);
+  assert.match(info.servidorVersaoErro, /sem resposta/);
+  assert.ok(info.servidorVersaoErro.length <= 120, `erro longo demais: ${info.servidorVersaoErro}`);
+  assert.equal(info.host, HOST, 'o resto do diagnóstico continua vindo');
+});
+
+test('a consulta que responde a tempo não deixa timer aberto (o withTimeout deixaria)', async () => {
+  const c = novoCliente();
+  c._versaoTimeoutMs = 60_000;
+  servidorComVersao(c, [resposta(200, '{"version":"1.7.0"}', { contentType: 'application/json' })]);
+  const timers = () => process.getActiveResourcesInfo().filter((r) => r === 'Timeout').length;
+  const antes = timers();
+
+  const info = await c.versionInfo();
+
+  assert.equal(info.servidorVersao, '1.7.0');
+  assert.equal(timers(), antes, 'um timer de 60 s ficou aberto depois de a resposta chegar');
+});

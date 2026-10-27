@@ -131,6 +131,23 @@ function motivoDoServidor(r) {
 
 const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
 
+/**
+ * Espera `promessa` por no máximo `ms`. O timer é desarmado quando a promessa termina, então nada fica
+ * aberto no event loop; o withTimeout acima deixa o timer vivo até estourar. O pedido que ficou para trás
+ * não é abortado: só deixa de ser esperado. O erro leva `limiteDeTempo` para quem chamou distinguir.
+ */
+function comLimiteDeTempo(promessa, ms, descricao) {
+  let timer;
+  const prazo = new Promise((_, rej) => {
+    timer = setTimeout(() => {
+      const erro = new Error(`${descricao} sem resposta em ${ms / 1000} s`);
+      erro.limiteDeTempo = true;
+      rej(erro);
+    }, ms);
+  });
+  return Promise.race([promessa, prazo]).finally(() => clearTimeout(timer));
+}
+
 /** Testa conexão TCP a um IP:porta. Resolve true/false, nunca lança. */
 function tcpOk(ip, port, timeout = 2500) {
   return new Promise((res) => {
@@ -189,6 +206,7 @@ export class FluigClient {
     this._varUserCode = cfg.isProd ? 'FLUIG_USERCODE_PROD' : 'FLUIG_USERCODE';
     this._userCodeOrigem = cfg.userCode ? this._varUserCode : null; // null = ainda não descoberto
     this._descobertaTimeoutMs = 15_000;
+    this._versaoTimeoutMs = 15_000; // limite da consulta de versão do diagnóstico (ver _versaoDoServidor)
     this._cookie = null;
     this._cookieAt = 0; // quando o cookie foi confirmado válido pela última vez
     this._soap = {};
@@ -1741,7 +1759,12 @@ export class FluigClient {
    */
   async _versaoDoServidor() {
     try {
-      const r = await this._restRaw(ROTA_VERSAO_FLUIG, { accept: 'text/plain, application/json' });
+      // Com limite: um servidor que aceita a conexão e não responde não pode travar o diagnóstico.
+      const r = await comLimiteDeTempo(
+        this._restRaw(ROTA_VERSAO_FLUIG, { accept: 'text/plain, application/json' }),
+        this._versaoTimeoutMs,
+        'consulta da versão',
+      );
       if (r.status < 200 || r.status >= 300) return { servidorVersao: null, servidorVersaoErro: `HTTP ${r.status}` };
       const corpo = String(r.text || '').trim();
       if (corpo.startsWith('<')) return { servidorVersao: null, servidorVersaoErro: 'resposta é HTML, não versão' };
@@ -1751,6 +1774,7 @@ export class FluigClient {
     } catch (e) {
       // O cookie também não pode sair por esta mensagem, mesmo quando a falha veio de fora do _fetch.
       const msg = ocultarCookie(String(e?.message || e), this._cookie);
+      if (e?.limiteDeTempo) return { servidorVersao: null, servidorVersaoErro: msg };
       // _restRaw já tentou um novo login; a sessão continuou recusada (401 ou página de login).
       if (/sessão expirada/.test(msg)) return { servidorVersao: null, servidorVersaoErro: 'sessão expirada mesmo após novo login' };
       return { servidorVersao: null, servidorVersaoErro: `consulta falhou: ${msg}`.slice(0, 120) };
