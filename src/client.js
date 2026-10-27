@@ -468,9 +468,10 @@ export class FluigClient {
 
   /**
    * Pergunta ao servidor se `cookie` ainda abre sessão (sem seguir redirecionamento).
-   * true = viva · false = o servidor respondeu e a sessão acabou · null = não deu para saber (rede,
-   * 5xx, bloqueio de IPS). "Não sei" não é "morta": derrubar a sessão por isso gastaria um login à toa,
-   * e a própria requisição seguinte detecta a sessão expirada se for o caso.
+   * true = viva · false = o servidor disse que a sessão acabou (a mesma regra de sessaoExpirada) · null =
+   * não deu para saber: rede, 5xx, bloqueio de IPS, ou uma resposta sem pong que não é rejeição de sessão
+   * (um 404 sem relação, por exemplo). "Não sei" não é "morta": derrubar a sessão por isso gastaria um
+   * login à toa, e a própria requisição seguinte detecta a sessão expirada se for o caso.
    */
   async _sessaoViva(cookie) {
     let r;
@@ -486,7 +487,8 @@ export class FluigClient {
     const text = await r.text().catch(() => '');
     if (r.ok && text.includes('pong')) return true;
     if (r.status >= 500 || /FortiGuard|Web Filter Violation|Web Page Blocked/i.test(text)) return null;
-    return false;
+    // Só rejeição definitiva conta como sessão morta; o resto é "não sei", e o cookie é mantido.
+    return sessaoExpirada(r.status, text, r.headers?.get?.('content-type')) ? false : null;
   }
 
   /**

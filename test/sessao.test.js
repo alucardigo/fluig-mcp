@@ -285,3 +285,30 @@ test('fluig_session_reset durante uma revalidação em andamento faz login NOVO'
   assert.deepEqual(r.cookiesAgora, ['JSESSIONIDSSO']);
   assert.equal(c._cookie, 'JSESSIONIDSSO=s1');
 });
+
+test('_sessaoViva: só rejeição definitiva de sessão é false; resposta sem pong e sem rejeição é inconclusiva (null)', async () => {
+  const casos = [
+    [resposta(200, 'pong'), true],
+    [resposta(401, ''), false],
+    [resposta(200, PAGINA_SAML, { contentType: 'text/html' }), false],
+    [resposta(404, 'não encontrado', { contentType: 'text/plain' }), null],
+    [resposta(200, 'corpo qualquer'), null],
+    [resposta(503, 'indisponível'), null],
+    [resposta(200, 'Web Filter Violation'), null],
+  ];
+  for (const [r, esperado] of casos) {
+    const c = novoCliente();
+    c._fetch = async () => r;
+    assert.equal(await c._sessaoViva('JSESSIONIDSSO=x'), esperado, `status ${r.status}`);
+  }
+});
+
+test('ping com 404 sem relação com a sessão mantém o cookie e não força novo login', async () => {
+  const c = novoCliente();
+  c._cookie = 'JSESSIONIDSSO=atual';
+  c._cookieAt = Date.now() - 60 * 60_000; // parado além da janela: o próximo login revalida com ping
+  const srv = servidorFalso(c, [resposta(404, 'não encontrado', { contentType: 'text/plain' })]);
+
+  assert.equal(await c.login(), 'JSESSIONIDSSO=atual');
+  assert.equal(srv.logins, 0, 'um ping inconclusivo não pode gastar um login');
+});
