@@ -16,7 +16,7 @@ import { loadConfig, ambientesConfigurados } from './src/config.js';
 import { FluigClient } from './src/client.js';
 import { resumoFormularios } from './src/formularios.js';
 import { consultaDataset, respostaDataset, OPERADORES, TIPOS, MAX_SERVER_LIMIT } from './src/datasetFiltros.js';
-import { entregarTexto, MAX_CHARS_PADRAO, recusarCortado } from './src/saida.js';
+import { entregarTexto, lerNaSaida, MAX_CHARS_PADRAO, recusarCortado } from './src/saida.js';
 import { client, comCliente } from './src/despacho.js';
 import { readFileSync } from 'node:fs';
 
@@ -41,6 +41,8 @@ const num = (description) => ({ type: 'number', description });
 // caminho vem do agente.
 const destinoNaSaida = (oQue) => str(`${oQue}, dentro de FLUIG_SAIDA_DIR (padrão: ~/fluig-mcp-saida); `
   + 'caminho relativo é relativo a ela, e caminho fora dela é recusado');
+// O mesmo vale para o arquivo local que sobe ao Fluig: o caminho vem do agente e o conteúdo sai da máquina.
+const arquivoNaSaida = destinoNaSaida;
 // Parâmetros comuns das ferramentas que devolvem texto grande.
 const SAIDA = {
   destino: destinoNaSaida('arquivo para gravar o conteúdo inteiro (opcional; a resposta traz só o resumo)'),
@@ -267,18 +269,18 @@ const TOOLS = [
     name: 'fluig_deploy_process',
     description: '⚠️ DEPLOY estrutural de PROCESSO (BPMN) headless via SOAP WorkflowEngineService (importProcess+releaseProcess, token do TokenService) — SEM Fluig Studio. Publica o .ecm30.xml (<list><ProcessDefinition>…). Exige confirm=true. 1º uso: validar com round-trip (baixar um processo real e re-deployar idêntico).',
     inputSchema: S({
-      xmlPath: str('caminho do arquivo .ecm30.xml (alternativa a xml)'),
+      xmlPath: arquivoNaSaida('arquivo .ecm30.xml (alternativa a xml)'),
       xml: str('conteúdo do .ecm30.xml inline (alternativa a xmlPath)'),
       processId: str('id do processo (opcional; extraído do XML se omitido)'),
       isNew: { type: 'boolean', description: 'true = processo novo; false (default) = nova versão de existente' },
       overWrite: { type: 'boolean', description: 'sobrescrever (default true)' },
-      svgPath: str('caminho opcional do .processimage.svg'),
+      svgPath: arquivoNaSaida('arquivo .processimage.svg (opcional)'),
       confirm: { type: 'boolean' },
     }, ['confirm']),
     handler: async ({ xmlPath, xml, processId, isNew = false, overWrite = true, svgPath, confirm }) => {
-      const processDefXml = xml || (xmlPath ? readFileSync(xmlPath, 'utf8') : null);
+      const processDefXml = xml || (xmlPath ? lerNaSaida(xmlPath, { campo: 'xmlPath', encoding: 'utf8' }) : null);
       if (!processDefXml) throw new Error('Informe xml (inline) ou xmlPath.');
-      const svgXml = svgPath ? readFileSync(svgPath, 'utf8') : undefined;
+      const svgXml = svgPath ? lerNaSaida(svgPath, { campo: 'svgPath', encoding: 'utf8' }) : undefined;
       return client.deployProcess(processDefXml, { processId, isNew, overWrite, svgXml, confirm: !!confirm });
     },
   },
@@ -994,7 +996,7 @@ const TOOLS = [
     inputSchema: S({
       formName: str('nome do formulário'),
       parentId: str('pasta do GED onde criar'),
-      zipPath: str('caminho local do ZIP com o HTML do formulário'),
+      zipPath: arquivoNaSaida('ZIP com o HTML do formulário'),
       confirm: { type: 'boolean', description: 'obrigatório: cria documento no GED' },
     }, ['formName', 'parentId', 'zipPath', 'confirm']),
     handler: async ({ confirm, ...a }) => client.formCreate(a, { confirm: !!confirm }),
@@ -1068,7 +1070,7 @@ const TOOLS = [
       + 'Usa a rota de UMA chamada de propósito: a de duas etapas renomeia o arquivo para [epoch]nome '
       + 'e descarta campos em silêncio.',
     inputSchema: S({
-      caminhoLocal: str('arquivo local a subir'),
+      caminhoLocal: arquivoNaSaida('arquivo local a subir'),
       parentId: str('pasta do GED de destino'),
       nomeArquivo: str('nome no GED (default: nome do arquivo local)'),
       confirm: { type: 'boolean', description: 'obrigatório: publica documento no GED' },
@@ -1180,9 +1182,8 @@ const TOOLS = [
   },
 ];
 
-// Injeta o parâmetro `env` em TODAS as ferramentas de uma vez (em vez de editar as ~20
-// definições uma a uma). teste é sempre o default -- quem não passar env continua batendo
-// em o servidor de homologação exatamente como antes; prod exige o caller passar env:"prod" explicitamente.
+// Injeta o parâmetro `env` em TODAS as ferramentas de uma vez (em vez de editar as definições uma a
+// uma). Obrigatório e sem default: o despacho recusa a chamada sem ele.
 for (const t of TOOLS) {
   t.inputSchema.properties = t.inputSchema.properties || {};
   t.inputSchema.properties.env = {
@@ -1220,6 +1221,27 @@ const TOOLS_ESCRITA = new Set([
 ]);
 for (const t of TOOLS) t.write = TOOLS_ESCRITA.has(t.name);
 
+/**
+ * Escritas que em homologação passam direto e em PRODUÇÃO exigem confirm:true — o mesmo critério do
+ * `_guardProdWrite` de src/client.js. São as do ciclo de desenvolvimento (salvar dataset, publicar
+ * formulário, mover solicitação de teste): pedir confirm a cada chamada em homologação só ensinaria o
+ * agente a mandar confirm:true sempre. As demais escritas exigem confirm em qualquer ambiente, e o
+ * próprio cliente recusa. A conferência fica no despacho, não nos métodos do cliente, porque eles
+ * servem também a outras ferramentas: o db_query grava o dataset descartável por `saveDataset`, e
+ * `_restRaw` é a base de quase toda rota REST.
+ */
+const CONFIRM_EM_PROD = new Set([
+  'fluig_dataset_save', 'fluig_dataset_enable', 'fluig_globalevent_save', 'fluig_workflow_events_update',
+  'fluig_form_save', 'fluig_process_start', 'fluig_process_move', 'fluig_process_take', 'fluig_rest_post',
+  'fluig_job_add', 'fluig_job_delete', 'fluig_job_run',
+]);
+for (const t of TOOLS) {
+  if (!CONFIRM_EM_PROD.has(t.name)) continue;
+  t.inputSchema.properties.confirm = {
+    type: 'boolean', description: 'obrigatório em env="prod" (em homologação passa direto)',
+  };
+}
+
 const READONLY = /^(1|true|yes|on)$/i.test(String(process.env.FLUIG_READONLY || ''));
 const TOOLS_ATIVAS = READONLY ? TOOLS.filter(t => !t.write) : TOOLS;
 
@@ -1237,7 +1259,8 @@ Ambiente (nenhum tem default — veja .env.example):
 
   FLUIG_PASS_CMD    comando que imprime a senha (cofre do sistema); vale a primeira linha.
   FLUIG_READONLY=1  expõe SOMENTE as ferramentas que não alteram o servidor.
-  FLUIG_SAIDA_DIR   pasta onde o parâmetro destino grava (padrão: ~/fluig-mcp-saida).
+  FLUIG_SAIDA_DIR   pasta onde destino grava e de onde sai o arquivo que sobe ao Fluig
+                    (caminhoLocal, zipPath, xmlPath, svgPath). Padrão: ~/fluig-mcp-saida.
 
 Toda chamada exige o parâmetro env ("teste" ou "prod"). Não há default: é o que impede
 ler homologação achando que é produção — e escrever em produção achando que é teste.`;
@@ -1302,9 +1325,21 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   }
   let alvo;
   try {
+    // As recusas vêm ANTES de criar o cliente: o loadConfig executa o FLUIG_PASS_CMD, e uma chamada que
+    // vai ser recusada não pode disparar o cofre.
+    if (tool.write) {
+      // Os handlers liam `!!confirm`, e a string "false" contava como confirmação.
+      if (args.confirm !== undefined && typeof args.confirm !== 'boolean') {
+        throw new Error(`confirm precisa ser booleano (true ou false), não ${JSON.stringify(args.confirm)}.`);
+      }
+      if (CONFIRM_EM_PROD.has(tool.name) && args.env === 'prod' && args.confirm !== true) {
+        throw new Error(`${tool.name} altera o servidor de PRODUÇÃO e exige confirm:true. `
+          + 'Em homologação (env="teste") passa direto.');
+      }
+      // Texto que saiu cortado de uma leitura (ver src/saida.js) não volta para o Fluig.
+      recusarCortado(args, '');
+    }
     alvo = clienteDe(args.env);
-    // Texto que saiu cortado de uma leitura (ver src/saida.js) não volta para o Fluig.
-    if (tool.write) recusarCortado(args, '');
   } catch (e) {
     return { content: [{ type: 'text', text: 'ERRO: ' + (e?.message || e) }], isError: true };
   }

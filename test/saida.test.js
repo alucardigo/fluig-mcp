@@ -6,7 +6,7 @@ import {
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  entregarTexto, gravarNaSaida, MARCA_CORTE, MAX_CHARS_PADRAO, pastaSaidaPadrao, recusarCortado,
+  entregarTexto, gravarNaSaida, lerNaSaida, MARCA_CORTE, MAX_CHARS_PADRAO, pastaSaidaPadrao, recusarCortado,
 } from '../src/saida.js';
 
 function pasta(t) {
@@ -142,6 +142,58 @@ test('link FÍSICO dentro da base não leva a escrita para o arquivo de fora', (
   gravarNaSaida('h.txt', 'gravado', { base });
   assert.equal(readFileSync(join(dir, 'fora.txt'), 'utf8'), 'original');
   assert.equal(readFileSync(join(base, 'h.txt'), 'utf8'), 'gravado');
+});
+
+test('lerNaSaida lê byte a byte o arquivo de dentro da pasta, por caminho relativo a ela ou absoluto', (t) => {
+  const dir = pasta(t);
+  const bin = Buffer.from([0x00, 0xff, 0x0a, 0x0d, 0xc3]);
+  mkdirSync(join(dir, 'sub'));
+  writeFileSync(join(dir, 'sub', 'form.zip'), bin);
+  assert.deepEqual(lerNaSaida('sub/form.zip', { base: dir }), bin);
+  assert.deepEqual(lerNaSaida(join(dir, 'sub', 'form.zip'), { base: dir }), bin);
+  writeFileSync(join(dir, 'proc.xml'), '<x>ação</x>');
+  assert.equal(lerNaSaida('proc.xml', { base: dir, encoding: 'utf8' }), '<x>ação</x>');
+});
+
+test('lerNaSaida recusa caminho fora da pasta (texto plantado no Fluig não sobe ~/.ssh) e cita o parâmetro', (t) => {
+  const dir = pasta(t);
+  const base = join(dir, 'base');
+  mkdirSync(base);
+  writeFileSync(join(dir, 'id_rsa'), 'segredo');
+  for (const caminho of [join(dir, 'id_rsa'), '../id_rsa', 'sub/../../id_rsa', `${base}-irma/id_rsa`]) {
+    assert.throws(() => lerNaSaida(caminho, { base, campo: 'caminhoLocal' }),
+      /caminhoLocal fora da pasta de saída .*FLUIG_SAIDA_DIR/, caminho);
+  }
+  assert.throws(() => lerNaSaida('.', { base, campo: 'zipPath' }), /zipPath .*própria pasta de saída/);
+  assert.throws(() => lerNaSaida('', { base, campo: 'zipPath' }), /zipPath inválido/);
+  assert.throws(() => lerNaSaida(undefined, { base, campo: 'zipPath' }), /zipPath inválido/);
+});
+
+test('lerNaSaida: link (junction ou simbólico) dentro da pasta não alcança arquivo de fora', (t) => {
+  const dir = pasta(t);
+  const base = join(dir, 'base');
+  const fora = join(dir, 'fora');
+  mkdirSync(base);
+  mkdirSync(fora);
+  writeFileSync(join(fora, 'id_rsa'), 'segredo');
+  symlinkSync(fora, join(base, 'atalho'), 'junction');
+  assert.throws(() => lerNaSaida('atalho/id_rsa', { base }), /fora da pasta de saída/);
+  try {
+    symlinkSync(join(fora, 'id_rsa'), join(base, 'chave'), 'file');
+  } catch (e) {
+    if (e.code === 'EPERM') return t.skip('sem privilégio para criar symlink de arquivo (Windows sem Developer Mode)');
+    throw e;
+  }
+  assert.throws(() => lerNaSaida('chave', { base }), /fora da pasta de saída/);
+});
+
+test('lerNaSaida: arquivo que não existe, pasta e pasta de saída ausente viram erro claro', (t) => {
+  const dir = pasta(t);
+  mkdirSync(join(dir, 'sub'));
+  assert.throws(() => lerNaSaida('nao-existe.zip', { base: dir, campo: 'zipPath' }), /zipPath: arquivo não encontrado/);
+  assert.throws(() => lerNaSaida('sub', { base: dir, campo: 'zipPath' }), /zipPath não é um arquivo comum/);
+  assert.throws(() => lerNaSaida('a.zip', { base: join(dir, 'nao-criada'), campo: 'zipPath' }),
+    /pasta de saída .* não existe.*FLUIG_SAIDA_DIR/);
 });
 
 test('texto cortado não pode ser gravado de volta no Fluig', () => {
