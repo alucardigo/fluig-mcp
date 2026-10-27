@@ -152,6 +152,23 @@ test('em homologação as mesmas escritas passam sem confirm, e confirm:true lib
   assert.ok(fluig.requisicoes > antes, 'com confirm:true a chamada de produção segue para o servidor');
 });
 
+test('apagar evento global exige confirm:true em homologação e produção, antes de qualquer requisição', async (t) => {
+  // Diferente das escritas do ciclo de desenvolvimento, apagar não passa direto em homologação: a
+  // exclusão leva o código do evento junto, e o CONTRIBUTING manda exigir confirm em qualquer ambiente.
+  const { fluig, chamar } = await conectar(t);
+  for (const env of ['teste', 'prod']) {
+    for (const confirm of [undefined, false]) {
+      const r = await chamar('fluig_globalevent_delete', { env, eventId: 'afterProcessCreate', confirm });
+      assert.ok(r.erro, `${env} confirm=${confirm}`);
+      assert.match(r.texto, /fluig_globalevent_delete .*exige confirm:true/, `${env} confirm=${confirm}`);
+    }
+  }
+  assert.equal(fluig.requisicoes, 0, 'nenhuma exclusão sem confirm pode chegar ao servidor');
+
+  await chamar('fluig_globalevent_delete', { env: 'teste', eventId: 'afterProcessCreate', confirm: true });
+  assert.ok(fluig.requisicoes > 0, 'com confirm:true a exclusão segue para o servidor');
+});
+
 test('confirm que não é booleano é recusado em toda ferramenta, em vez de virar true por !!', async (t) => {
   // "false" é string não vazia: `!!confirm` a tomava por confirmação.
   const { fluig, chamar } = await conectar(t);

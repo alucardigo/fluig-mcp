@@ -202,6 +202,15 @@ const TOOLS = [
     handler: async ({ eventId, code }) => client.saveGlobalEvent(eventId, code),
   },
   {
+    name: 'fluig_globalevent_delete',
+    description: '⚠️ ESCRITA/DESTRUTIVO e IRREVERSÍVEL. Apaga UM evento global pelo id (eventId); os demais eventos não são afetados. Exige confirm=true em qualquer ambiente.',
+    inputSchema: S({
+      eventId: str('id do evento global a apagar'),
+      confirm: { type: 'boolean', description: 'obrigatório true' },
+    }, ['eventId', 'confirm']),
+    handler: async ({ eventId }) => client.deleteGlobalEvent(eventId),
+  },
+  {
     name: 'fluig_workflow_check',
     description: 'Verifica se o FluiggersWidget está instalado (necessário p/ eventos de processo via API).',
     inputSchema: S(),
@@ -1207,7 +1216,7 @@ for (const t of TOOLS) {
  */
 const TOOLS_ESCRITA = new Set([
   'fluig_dataset_save', 'fluig_dataset_delete', 'fluig_dataset_enable', 'fluig_dataset_state_set',
-  'fluig_dataset_restore', 'fluig_form_save', 'fluig_form_create', 'fluig_globalevent_save',
+  'fluig_dataset_restore', 'fluig_form_save', 'fluig_form_create', 'fluig_globalevent_save', 'fluig_globalevent_delete',
   'fluig_process_start', 'fluig_process_move', 'fluig_process_move_rest', 'fluig_process_take',
   'fluig_process_cancel', 'fluig_process_import_xml', 'fluig_process_event_set',
   'fluig_process_event_set_xml', 'fluig_process_diagram_set', 'fluig_process_version_release',
@@ -1235,6 +1244,14 @@ const CONFIRM_EM_PROD = new Set([
   'fluig_form_save', 'fluig_process_start', 'fluig_process_move', 'fluig_process_take', 'fluig_rest_post',
   'fluig_job_add', 'fluig_job_delete', 'fluig_job_run',
 ]);
+
+/**
+ * Escritas DESTRUTIVAS: exigem confirm:true em QUALQUER ambiente, e não só em produção. Apagar não tem
+ * volta, e o CONTRIBUTING e o README mandam exigir confirm em todo ambiente nesse caso. Por isso não
+ * entram em CONFIRM_EM_PROD, que é só para o ciclo de desenvolvimento que passa direto em homologação.
+ */
+const CONFIRM_SEMPRE = new Set(['fluig_globalevent_delete']);
+
 for (const t of TOOLS) {
   if (!CONFIRM_EM_PROD.has(t.name)) continue;
   t.inputSchema.properties.confirm = {
@@ -1335,6 +1352,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       if (CONFIRM_EM_PROD.has(tool.name) && args.env === 'prod' && args.confirm !== true) {
         throw new Error(`${tool.name} altera o servidor de PRODUÇÃO e exige confirm:true. `
           + 'Em homologação (env="teste") passa direto.');
+      }
+      if (CONFIRM_SEMPRE.has(tool.name) && args.confirm !== true) {
+        throw new Error(`${tool.name} é destrutiva e exige confirm:true em qualquer ambiente. Nada foi alterado.`);
       }
       // Texto que saiu cortado de uma leitura (ver src/saida.js) não volta para o Fluig.
       recusarCortado(args, '');
