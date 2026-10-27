@@ -312,3 +312,45 @@ test('ping com 404 sem relação com a sessão mantém o cookie e não força no
   assert.equal(await c.login(), 'JSESSIONIDSSO=atual');
   assert.equal(srv.logins, 0, 'um ping inconclusivo não pode gastar um login');
 });
+
+test('updateWorkflowEvents: sessão expirada no modo cookie descarta o cookie e manda gerar outro e rodar o reset', async () => {
+  const NODE = `"${process.execPath}"`;
+  const c = new FluigClient(loadConfig('teste', {
+    FLUIG_HOST: 'http://fluig.exemplo.com.br:8080',
+    FLUIG_USER: 'fulano',
+    FLUIG_USERCODE: 'fulano',
+    FLUIG_COOKIE_CMD: `${NODE} -e "process.stdout.write('JSESSIONIDSSO=valor-secreto')"`,
+  }));
+  c._cookie = 'JSESSIONIDSSO=valor-secreto';
+  c._cookieAt = Date.now();
+  c._fetch = async () => resposta(401, '');
+
+  await assert.rejects(() => c.updateWorkflowEvents('PROC', 1, []), (e) =>
+    /sessão expirada: gere outro cookie e rode fluig_session_reset/.test(e.message) && !/valor-secreto/.test(e.message));
+  assert.equal(c._cookie, null, 'o cookie recusado sai do cache');
+  await assert.rejects(() => c.login(), /rode fluig_session_reset/, 'a orientação precisa ser verdadeira: o próximo login não roda o comando');
+});
+
+test('updateWorkflowEvents: sessão expirada no modo senha descarta o cookie e manda tentar de novo, com login automático', async () => {
+  const c = novoCliente();
+  c._cookie = 'JSESSIONIDSSO=valor-secreto';
+  c._cookieAt = Date.now();
+  const srv = servidorFalso(c, [resposta(401, '')]);
+
+  await assert.rejects(() => c.updateWorkflowEvents('PROC', 1, []), (e) =>
+    /sessão expirada: tente de novo \(o próximo login é automático\)/.test(e.message) && !/valor-secreto/.test(e.message));
+  assert.equal(c._cookie, null, 'o cookie recusado sai do cache');
+  assert.equal(srv.logins, 0, 'a gravação recusada não dispara login por conta própria');
+  assert.equal(await c.login(), 'JSESSIONIDSSO=s1', 'o próximo login é automático');
+});
+
+test('updateWorkflowEvents: gravação aceita devolve o JSON da resposta, com PUT', async () => {
+  const c = novoCliente();
+  const corpo = '{"ok":true,"gravados":2}';
+  // Response de verdade tem text() e json(); o mock precisa dos dois para não depender de qual o código usa.
+  const ok = { ...resposta(200, corpo, { contentType: 'application/json' }), json: async () => JSON.parse(corpo) };
+  const srv = servidorFalso(c, [ok]);
+
+  assert.deepEqual(await c.updateWorkflowEvents('PROC', 1, [{ a: 1 }]), { ok: true, gravados: 2 });
+  assert.equal(srv.chamadas[0].method, 'PUT');
+});

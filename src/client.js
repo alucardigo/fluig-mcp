@@ -956,8 +956,18 @@ export class FluigClient {
       headers: { Cookie: cookie, 'Content-Type': 'application/json' },
       body: JSON.stringify(events),
     });
+    const texto = await r.text();
+    // Sessão expirada não é falta do FluiggersWidget: a gravação não aconteceu. O cookie recusado sai do
+    // cache, e a mensagem diz como seguir em cada modo (ver _descartarSessao para o modo cookie).
+    if (sessaoExpirada(r.status, texto, r.headers.get('content-type'))) {
+      this._descartarSessao(cookie);
+      const orientacao = this.cookieCmd
+        ? 'sessão expirada: gere outro cookie e rode fluig_session_reset'
+        : 'sessão expirada: tente de novo (o próximo login é automático)';
+      throw new Error(`updateWorkflowEvents: ${orientacao}. Nada foi gravado.`);
+    }
     if (!r.ok) throw new Error(`Falha ao gravar eventos (HTTP ${r.status}). FluiggersWidget instalado?`);
-    return r.json();
+    return JSON.parse(texto);
   }
 
   // ---------- Passthrough REST (escape hatch) ----------
