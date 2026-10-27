@@ -167,8 +167,12 @@ test('apagar evento global sem confirm é dry-run: nenhum DELETE sai, em homolog
   }
   assert.equal(fluig.exclusoes, 0, 'uma exclusão sem confirm chegou ao servidor');
 
+  // As chamadas de dry-run acima já contaram requisições, então a medição tem que ser feita antes da confirmada.
+  // O fake responde 500 à leitura da lista, e a exclusão para antes do DELETE: este teste prova só que o
+  // caminho confirmado chega ao servidor. O DELETE em si é coberto por test/globalevent.test.js.
+  const antes = fluig.requisicoes;
   await chamar('fluig_globalevent_delete', { env: 'teste', eventId: 'afterProcessCreate', confirm: true });
-  assert.ok(fluig.requisicoes > 0, 'com confirm:true a exclusão segue para o servidor');
+  assert.ok(fluig.requisicoes > antes, 'com confirm:true a chamada não chegou ao servidor');
 });
 
 test('confirm que não é booleano é recusado em toda ferramenta, em vez de virar true por !!', async (t) => {

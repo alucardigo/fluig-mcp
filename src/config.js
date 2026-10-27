@@ -40,6 +40,9 @@ const TEMPO_SENHA_MS = 15_000;
  */
 const TEMPO_COOKIE_PADRAO_MS = 120_000;
 
+/** Um par nome=valor de cookie: nome de caracteres de token, valor sem espaço nem ";". */
+const PAR_DE_COOKIE = /^[A-Za-z0-9_.-]+=[^\s;]+$/;
+
 /**
  * Divide a linha de comando de FLUIG_PASS_CMD em argumentos, respeitando aspas simples e duplas.
  * Sem shell de propósito: o comando roda com execFile, então `;`, `|` e `$()` são texto, não código.
@@ -162,20 +165,22 @@ function senhaDoComando(linha, variavel) {
  * Cookie de sessão lido da saída de um comando (FLUIG_COOKIE_CMD). Diferente da senha, a saída inteira
  * conta: o cookie pode vir em mais de uma linha, e as partes são unidas com "; " como no header Cookie.
  *
- * Qualquer caractere de controle separa as partes (CR, LF, NUL e os demais). Um progresso impresso na mesma
- * linha do cookie ("Autenticando" + CR + "JSESSIONIDSSO=...") colava no nome do cookie, e o undici recusava
- * o header com o valor na mensagem de erro. Só entra o que é par nome=valor: texto solto não é cookie.
+ * As partes são separadas por qualquer caractere de controle, por espaço e por ";". Assim um progresso
+ * ("Autenticando") ou um prefixo ("Cookie:") colado na mesma linha não vira parte do nome do cookie: o
+ * undici recusava o header com o valor na mensagem de erro, ou o servidor lia um nome errado e recusava a
+ * sessão. Só entra o que é par nome=valor sem espaço: texto solto não é cookie.
  *
- * Sem JSESSIONIDSSO nem jwt.token não é cookie de sessão, e a saída NÃO entra na mensagem: ela pode ser
- * um cookie quase certo, e cookie não pode ir para log nem para o retorno de uma ferramenta.
+ * Sem um par JSESSIONIDSSO=... ou jwt.token=... inteiro não é cookie de sessão, e a saída NÃO entra na
+ * mensagem: ela pode ser um cookie quase certo, e cookie não pode ir para log nem para o retorno de uma
+ * ferramenta.
  */
 export async function cookieDoComando(linha, variavel = 'FLUIG_COOKIE_CMD', timeoutMs = TEMPO_COOKIE_PADRAO_MS) {
   const saida = await rodarComandoCookie(linha, variavel, timeoutMs);
-  const cookie = saida.split(/[\x00-\x1f\x7f]/).map((p) => p.trim()).filter((p) => p.includes('=')).join('; ');
-  if (!/JSESSIONIDSSO=|jwt\.token=/.test(cookie)) {
+  const pares = saida.split(/[\s;\x00-\x1f\x7f]+/).filter((p) => PAR_DE_COOKIE.test(p));
+  if (!pares.some((p) => /^(JSESSIONIDSSO|jwt\.token)=/.test(p))) {
     throw new Error(`${variavel}: o comando não devolveu cookie de sessão (JSESSIONIDSSO ou jwt.token).`);
   }
-  return cookie;
+  return pares.join('; ');
 }
 
 /**
