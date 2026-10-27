@@ -271,8 +271,9 @@ export function loadConfig(alvo = 'teste', env = process.env) {
   // Só a sintaxe é conferida aqui (aspas abertas). O comando roda no primeiro login, e de novo a cada
   // fluig_session_reset: não há cookie guardado na configuração.
   if (comCookie) dividirComando(String(env[vCookie]));
-  // Vale para os dois ambientes: é o mesmo tempo de espera de um MFA, não uma credencial.
-  const cookieTimeoutMs = tempoDoCookie(env.FLUIG_COOKIE_TIMEOUT_MS);
+  // A variável vale para os dois ambientes (é o tempo de espera de um MFA, não uma credencial), mas só é
+  // conferida onde há cookie: um valor ruim não pode impedir o ambiente que usa senha de subir.
+  const cookieTimeoutMs = comCookie ? tempoDoCookie(env.FLUIG_COOKIE_TIMEOUT_MS) : TEMPO_COOKIE_PADRAO_MS;
 
   const user = String(env[vUser]).trim();
   let pass = '';
