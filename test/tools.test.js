@@ -14,15 +14,18 @@ const FONTE = readFileSync(new URL('../server.js', import.meta.url), 'utf8');
 /**
  * Servidor MCP de verdade, falando stdio, apontado para um Fluig falso que só conta requisições.
  * `fluig.requisicoes === 0` prova que a recusa aconteceu antes de qualquer coisa sair da máquina.
+ * `fluig.exclusoes` guarda a URL de cada DELETE que chegou ao Fluig falso.
  * `ambiente` acrescenta variáveis ao do servidor; valor null tira a variável.
+ * `responder(metodo, caminho)` devolve a resposta da rota (ver `fluigComEvento`); sem ela, responde 500.
  */
-async function conectar(t, ambiente = {}) {
-  const fluig = { requisicoes: 0, exclusoes: 0 };
+async function conectar(t, ambiente = {}, responder = () => null) {
+  const fluig = { requisicoes: 0, exclusoes: [] };
   const http = createServer((req, res) => {
     fluig.requisicoes++;
-    if (req.method === 'DELETE') fluig.exclusoes++;
-    res.writeHead(500, { 'Content-Type': 'text/plain' });
-    res.end('Fluig falso');
+    if (req.method === 'DELETE') fluig.exclusoes.push(req.url);
+    const r = responder(req.method, req.url.split('?')[0]) ?? { status: 500, corpo: 'Fluig falso' };
+    res.writeHead(r.status, { 'Content-Type': 'text/plain', ...r.cabecalhos });
+    res.end(r.corpo ?? '');
   });
   await new Promise((ok) => http.listen(0, '127.0.0.1', ok));
   const host = `http://127.0.0.1:${http.address().port}`;
@@ -153,26 +156,61 @@ test('em homologação as mesmas escritas passam sem confirm, e confirm:true lib
   assert.ok(fluig.requisicoes > antes, 'com confirm:true a chamada de produção segue para o servidor');
 });
 
-test('apagar evento global sem confirm é dry-run: nenhum DELETE sai, em homologação nem em produção', async (t) => {
-  // Apagar leva o código do evento junto. Sem confirm:true a ferramenta só lê e mostra o que seria apagado,
-  // como fluig_process_convert_instances. O fake aqui não serve a leitura, então o retorno pode ser erro:
-  // o que importa é que nenhum DELETE chegue ao Fluig. O formato do dry-run é coberto em test/globalevent.test.js.
-  const { fluig, chamar } = await conectar(t);
+/** Caminhos que o cliente chama para ler a sessão, listar os eventos globais e apagar um deles. */
+const LOGIN = '/portal/api/servlet/login.do';
+const LISTA_EVENTOS = '/ecm/api/rest/ecm/globalevent/getEventList';
+const APAGAR_EVENTO = '/ecm/api/rest/ecm/globalevent/deleteGlobalEvent';
+
+/** Resposta do Fluig falso em JSON, como as rotas REST devolvem. */
+const jsonFalso = (status, corpo) => ({
+  status, corpo: JSON.stringify(corpo), cabecalhos: { 'Content-Type': 'application/json' },
+});
+
+/**
+ * Fluig falso com um evento global: o login (a sessão é obrigatória), a lista que a ferramenta lê antes de
+ * qualquer coisa e o DELETE. Rota fora dessas responde 500, pelo padrão do `conectar`.
+ */
+function fluigComEvento(metodo, caminho) {
+  if (metodo === 'POST' && caminho === LOGIN) {
+    return { status: 302, cabecalhos: { 'Set-Cookie': 'JSESSIONIDSSO=sessao-falsa; Path=/' } };
+  }
+  if (metodo === 'GET' && caminho === LISTA_EVENTOS) {
+    return jsonFalso(200, [{ globalEventPK: { eventId: 'afterProcessCreate' }, eventDescription: 'function afterProcessCreate() {}' }]);
+  }
+  if (metodo === 'DELETE' && caminho === APAGAR_EVENTO) return jsonFalso(200, { content: 'OK' });
+  return null;
+}
+
+test('apagar evento global: sem confirm é dry-run, e confirm:true manda exatamente um DELETE à rota certa', { timeout: 15000 }, async (t) => {
+  // O Fluig falso serve login e lista com o evento, então cada caminho roda de verdade: sem confirm, a ferramenta
+  // lê a lista e devolve o dry-run, sem nenhum DELETE; com confirm:true, tem que chegar exatamente um DELETE à rota.
+  // Um manipulador que descartasse confirm faria o segundo bloco contar zero DELETE.
+  const { fluig, chamar } = await conectar(t, {}, fluigComEvento);
+
   for (const env of ['teste', 'prod']) {
     for (const confirm of [undefined, false]) {
       const r = await chamar('fluig_globalevent_delete', { env, eventId: 'afterProcessCreate', confirm });
-      // O despacho não recusa mais antes do handler: quem decide entre dry-run e exclusão é a ferramenta.
-      assert.doesNotMatch(r.texto, /exige confirm/, `${env} confirm=${confirm}: o despacho recusou antes do dry-run`);
+      assert.equal(r.erro, false, `${env} confirm=${confirm}: ${r.texto}`);
+      const dryRun = JSON.parse(r.texto);
+      assert.equal(dryRun.dryRun, true, `${env} confirm=${confirm}: não devolveu o dry-run`);
+      assert.equal(dryRun.seriaApagado.eventId, 'afterProcessCreate');
     }
   }
-  assert.equal(fluig.exclusoes, 0, 'uma exclusão sem confirm chegou ao servidor');
+  assert.deepEqual(fluig.exclusoes, [], 'uma chamada sem confirm chegou ao DELETE');
 
-  // As chamadas de dry-run acima já contaram requisições, então a medição tem que ser feita antes da confirmada.
-  // O fake responde 500 à leitura da lista, e a exclusão para antes do DELETE: este teste prova só que o
-  // caminho confirmado chega ao servidor. O DELETE em si é coberto por test/globalevent.test.js.
-  const antes = fluig.requisicoes;
-  await chamar('fluig_globalevent_delete', { env: 'teste', eventId: 'afterProcessCreate', confirm: true });
-  assert.ok(fluig.requisicoes > antes, 'com confirm:true a chamada não chegou ao servidor');
+  for (const env of ['teste', 'prod']) {
+    const antes = fluig.exclusoes.length;
+    const r = await chamar('fluig_globalevent_delete', { env, eventId: 'afterProcessCreate', confirm: true });
+    assert.equal(r.erro, false, `${env} confirm:true: ${r.texto}`);
+    // Conta os DELETE antes de ler a resposta: se o manipulador descartasse confirm, a chamada viraria dry-run
+    // e a falha tem que ser esta, não um erro ao ler o eventoApagado.
+    const delecoes = fluig.exclusoes.slice(antes);
+    assert.equal(delecoes.length, 1, `${env}: confirm:true deveria mandar exatamente um DELETE (mandou ${delecoes.length})`);
+    const alvo = new URL(delecoes[0], 'http://localhost');
+    assert.equal(alvo.pathname, APAGAR_EVENTO);
+    assert.equal(alvo.searchParams.get('eventName'), 'afterProcessCreate');
+    assert.equal(JSON.parse(r.texto).eventoApagado.eventId, 'afterProcessCreate');
+  }
 });
 
 test('confirm que não é booleano é recusado em toda ferramenta, em vez de virar true por !!', async (t) => {
