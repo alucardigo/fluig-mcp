@@ -86,7 +86,7 @@ function descreverMs(ms) {
  * com erro, o stdout é a própria senha. O stderr é o que explica a falha ("not signed in", "No secret
  * key"), então vai junto, numa linha e cortado.
  */
-function motivoDaFalha(e, timeoutMs, dica) {
+function motivoDaFalha(e, timeoutMs, dica, stderr = e.stderr) {
   // ETIMEDOUT é do execFileSync. O execFile assíncrono marca o estouro com killed e signal.
   if (e.code === 'ETIMEDOUT' || (e.killed && e.signal)) return `não respondeu em ${descreverMs(timeoutMs)}; ${dica}`;
   let motivo = String(e.status ?? e.code ?? e.signal ?? 'erro desconhecido');
@@ -97,7 +97,7 @@ function motivoDaFalha(e, timeoutMs, dica) {
       + 'powershell.exe -NoProfile -Command "..." (veja docs/clientes.md)';
   }
   // Cookie de sessão também é segredo: se o comando falhou depois de imprimi-lo no stderr, não vai à mensagem.
-  const erro = String(e.stderr ?? '').replace(/\s+/g, ' ').trim()
+  const erro = String(stderr ?? '').replace(/\s+/g, ' ').trim()
     .replace(/(JSESSIONIDSSO|jwt\.token)=\S+/g, '$1=…');
   if (!erro) return motivo;
   return `${motivo}: ${erro.length > 200 ? `${erro.slice(0, 200)}…` : erro}`;
@@ -133,10 +133,11 @@ function rodarComandoCookie(linha, variavel, timeoutMs) {
     // força, qualquer que seja o sinal. windowsHide: mesmo motivo do comando da senha (janela piscando num
     // cliente sem console).
     const opcoes = { encoding: 'utf8', timeout: timeoutMs, killSignal: 'SIGKILL', windowsHide: true };
-    const filho = execFile(cmd, args, opcoes, (e, saida) => {
+    // execFile entrega o stderr como terceiro argumento do callback; e.stderr não existe nesse caminho.
+    const filho = execFile(cmd, args, opcoes, (e, saida, erroSaida) => {
       if (e) {
         const dica = 'ele está esperando o cofre ou uma aprovação de MFA? Aumente FLUIG_COOKIE_TIMEOUT_MS se for isso.';
-        rejeitar(new Error(`${variavel}: o comando falhou (${motivoDaFalha(e, timeoutMs, dica)}) — não vou tentar o login.`));
+        rejeitar(new Error(`${variavel}: o comando falhou (${motivoDaFalha(e, timeoutMs, dica, erroSaida)}) — não vou tentar o login.`));
       } else {
         resolver(saida);
       }
