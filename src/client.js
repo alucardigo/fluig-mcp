@@ -47,6 +47,9 @@ async function retry(fn, tries = 4, baseMs = 400) {
 /** Cookie parado há mais que isto é revalidado com um ping antes de ser reaproveitado. */
 const SESSAO_REVALIDAR_MS = 20 * 60_000;
 
+/** Rota de versão do Studio: o diagnóstico (fluig_version) lê a versão do servidor daqui. */
+const ROTA_VERSAO_FLUIG = '/ecm/api/rest/ecm/studioWorkflowRest/version';
+
 /**
  * True quando a resposta significa "sua sessão acabou", e não uma resposta de verdade.
  *
@@ -1509,7 +1512,10 @@ export class FluigClient {
     };
   }
 
-  /** P0#2 — Diagnóstico: quem eu sou, onde estou, com que cookies. Mata a dúvida "qual MCP roda". */
+  /**
+   * P0#2 — Diagnóstico: quem eu sou, onde estou, com que cookies, e a versão do servidor Fluig.
+   * Mata a dúvida "qual MCP roda". A versão nunca derruba o diagnóstico (ver _versaoDoServidor).
+   */
   async versionInfo() {
     const cookie = this._cookie || (await this.login());
     const nomes = cookie.split('; ').map(c => c.split('=')[0]);
@@ -1518,11 +1524,38 @@ export class FluigClient {
       const ui = await this._rest('/authentication/api/v1/login/user-info');
       if (ui && !ui._raw) usuario = { id: ui.id, code: ui.code, admin: ui.admin, tenant: ui.tenantDescription };
     } catch { /* diagnóstico não pode derrubar o diagnóstico */ }
+    const versao = await this._versaoDoServidor();
     return {
       ambiente: this.envName, isProd: this.isProd, host: this.host,
       cookies: nomes, temJwtToken: nomes.includes('jwt.token'), usuario,
       colleagueId: this.userCode, colleagueIdOrigem: this._userCodeOrigem,
+      servidorVersao: versao.servidorVersao, servidorVersaoErro: versao.servidorVersaoErro,
     };
+  }
+
+  /**
+   * Versão do Fluig, lida da rota de versão do Studio. Devolve `servidorVersao` (x.y.z), ou `null`
+   * com `servidorVersaoErro` curto. NUNCA lança: o diagnóstico precisa responder com o servidor
+   * fora do ar, a rota ausente ou a sessão recusada.
+   *
+   * O corpo não tem formato garantido, então o número sai de um regex. Corpo que começa com '<' é
+   * página (login ou erro), não versão: um x.y.z dentro dela não conta.
+   */
+  async _versaoDoServidor() {
+    try {
+      const r = await this._restRaw(ROTA_VERSAO_FLUIG, { accept: 'text/plain, application/json' });
+      if (r.status < 200 || r.status >= 300) return { servidorVersao: null, servidorVersaoErro: `HTTP ${r.status}` };
+      const corpo = String(r.text || '').trim();
+      if (corpo.startsWith('<')) return { servidorVersao: null, servidorVersaoErro: 'resposta é HTML, não versão' };
+      const achado = corpo.match(/\d+\.\d+\.\d+/);
+      if (!achado) return { servidorVersao: null, servidorVersaoErro: 'resposta sem número de versão' };
+      return { servidorVersao: achado[0], servidorVersaoErro: null };
+    } catch (e) {
+      const msg = String(e?.message || e);
+      // _restRaw já tentou um novo login; a sessão continuou recusada (401 ou página de login).
+      if (/sessão expirada/.test(msg)) return { servidorVersao: null, servidorVersaoErro: 'sessão expirada mesmo após novo login' };
+      return { servidorVersao: null, servidorVersaoErro: `consulta falhou: ${msg}`.slice(0, 120) };
+    }
   }
 
   /**
