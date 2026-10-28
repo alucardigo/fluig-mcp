@@ -318,7 +318,7 @@ const TOOLS = [
   },
   {
     name: 'fluig_rm_query',
-    description: 'Consulta o RM (Corpore) pelo padrão do projeto: ds_generic_rm_sql + sentença homologada WS.###. '
+    description: 'Consulta o RM (Corpore) via ds_generic_rm_sql + sentença homologada WS.###. '
       + 'READ-ONLY DE VERDADE: chama o dataset direto pelo dataset-handle/search, sem gravar nada no '
       + 'servidor. É o caminho preferido para ler o RM — use no lugar de fluig_rm_db_query sempre que '
       + 'houver sentença. Informe os campos esperados.',
@@ -624,7 +624,7 @@ const TOOLS = [
     handler: async ({ path, body, form }) => client.restPost(path, body, !!form),
   },
 
-  // ─── API interna do Painel de Controle (mapeada em data omitida) ────────────────
+  // ─── API interna do Painel de Controle ────────────────
   // Rotas que as telas /portal/p/1/wcmdatasetpage e /pagejobscheduler usam.
   // Não documentadas pela TOTVS; podem mudar entre versões do Fluig.
   {
@@ -1152,7 +1152,7 @@ const TOOLS = [
   {
     name: 'fluig_rm_dataserver_schema',
     description: 'Contrato (schema) de um DataServer do RM — leia ANTES de tentar gravar no ERP. '
-      + 'Roda via ServiceManager → wsDataServer.getSchema, o padrão do projeto. '
+      + 'Roda via ServiceManager → wsDataServer.getSchema, o padrão de datasets customizados. '
       + '⚠️ Grava um dataset para executar; em env="prod" exige confirm=true.',
     inputSchema: S({
       dataServerName: str('ex: FinLanBaixaData, RhuPessoaData'),
