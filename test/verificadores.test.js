@@ -33,6 +33,16 @@ test('saveGlobalEvent não grava quando a lista atual não pôde ser lida (apaga
   assert.equal(gravacoes.length, 0);
 });
 
+test('saveGlobalEvent: lista ilegível com a mensagem aninhada do servidor traz o motivo, sem "HTTP ?"', async () => {
+  const c = novoCliente();
+  c._rest = async (path) => {
+    if (path.endsWith('/getEventList')) return { message: { message: 'falha de leitura' } };
+    throw new Error(`não deveria chegar à gravação: ${path}`);
+  };
+  await assert.rejects(() => c.saveGlobalEvent('beforeLogin', 'function x() {}'), (e) =>
+    /falha de leitura/.test(e.message) && !/HTTP \?/.test(e.message));
+});
+
 test('saveGlobalEvent preserva os outros eventos da lista', async () => {
   const c = novoCliente();
   let gravado;

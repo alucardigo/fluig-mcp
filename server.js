@@ -202,6 +202,17 @@ const TOOLS = [
     handler: async ({ eventId, code }) => client.saveGlobalEvent(eventId, code),
   },
   {
+    name: 'fluig_globalevent_delete',
+    description: '⚠️ ESCRITA/DESTRUTIVO e IRREVERSÍVEL. Apaga UM evento global pelo id (eventId); os demais eventos não são afetados. '
+      + 'Sem confirm=true devolve o DRY-RUN: o evento que seria apagado, com o código, sem apagar nada. '
+      + 'Com confirm=true apaga e devolve o código apagado (eventoApagado), para restaurar com fluig_globalevent_save.',
+    inputSchema: S({
+      eventId: str('id do evento global a apagar'),
+      confirm: { type: 'boolean', description: 'true apaga de verdade; sem isso devolve o dry-run' },
+    }, ['eventId']),
+    handler: async ({ eventId, confirm }) => client.deleteGlobalEvent(eventId, { confirm: confirm === true }),
+  },
+  {
     name: 'fluig_workflow_check',
     description: 'Verifica se o FluiggersWidget está instalado (necessário p/ eventos de processo via API).',
     inputSchema: S(),
@@ -1207,7 +1218,7 @@ for (const t of TOOLS) {
  */
 const TOOLS_ESCRITA = new Set([
   'fluig_dataset_save', 'fluig_dataset_delete', 'fluig_dataset_enable', 'fluig_dataset_state_set',
-  'fluig_dataset_restore', 'fluig_form_save', 'fluig_form_create', 'fluig_globalevent_save',
+  'fluig_dataset_restore', 'fluig_form_save', 'fluig_form_create', 'fluig_globalevent_save', 'fluig_globalevent_delete',
   'fluig_process_start', 'fluig_process_move', 'fluig_process_move_rest', 'fluig_process_take',
   'fluig_process_cancel', 'fluig_process_import_xml', 'fluig_process_event_set',
   'fluig_process_event_set_xml', 'fluig_process_diagram_set', 'fluig_process_version_release',
@@ -1235,6 +1246,7 @@ const CONFIRM_EM_PROD = new Set([
   'fluig_form_save', 'fluig_process_start', 'fluig_process_move', 'fluig_process_take', 'fluig_rest_post',
   'fluig_job_add', 'fluig_job_delete', 'fluig_job_run',
 ]);
+
 for (const t of TOOLS) {
   if (!CONFIRM_EM_PROD.has(t.name)) continue;
   t.inputSchema.properties.confirm = {
@@ -1258,6 +1270,8 @@ Ambiente (nenhum tem default — veja .env.example):
   Produção:     FLUIG_HOST_PROD  FLUIG_USER_PROD  FLUIG_PASS_PROD  (ou FLUIG_PASS_CMD_PROD)
 
   FLUIG_PASS_CMD    comando que imprime a senha (cofre do sistema); vale a primeira linha.
+  FLUIG_COOKIE_CMD  comando que imprime o cookie de sessão (MFA ou SSO): sem senha e sem login.do.
+  FLUIG_COOKIE_TIMEOUT_MS  espera máxima desse comando, em ms (padrão 120000: tempo para aprovar o MFA).
   FLUIG_READONLY=1  expõe SOMENTE as ferramentas que não alteram o servidor.
   FLUIG_SAIDA_DIR   pasta onde destino grava e de onde sai o arquivo que sobe ao Fluig
                     (caminhoLocal, zipPath, xmlPath, svgPath). Padrão: ~/fluig-mcp-saida.
@@ -1289,8 +1303,9 @@ if (!configurados.length) {
   console.error(
     'fluig-mcp: nenhum ambiente configurado. Defina FLUIG_HOST/FLUIG_USER/FLUIG_PASS '
     + '(homologação) e/ou FLUIG_HOST_PROD/FLUIG_USER_PROD/FLUIG_PASS_PROD (produção); no lugar '
-    + 'da senha, FLUIG_PASS_CMD/FLUIG_PASS_CMD_PROD lê de um comando (cofre do sistema). '
-    + 'Veja .env.example. Rode --list para inspecionar as ferramentas sem credencial.',
+    + 'da senha, FLUIG_PASS_CMD/FLUIG_PASS_CMD_PROD lê de um comando (cofre do sistema); com MFA ou SSO, '
+    + 'FLUIG_COOKIE_CMD/FLUIG_COOKIE_CMD_PROD. Veja .env.example. Rode --list para inspecionar as '
+    + 'ferramentas sem credencial.',
   );
   process.exit(1);
 }

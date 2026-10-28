@@ -4,19 +4,19 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![npm](https://img.shields.io/npm/v/fluig-mcp)](https://www.npmjs.com/package/fluig-mcp)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-informational)](package.json)
-[![Ferramentas](https://img.shields.io/badge/ferramentas-97-success)](#as-ferramentas)
+[![Ferramentas](https://img.shields.io/badge/ferramentas-98-success)](#as-ferramentas)
 
 Servidor [MCP](https://modelcontextprotocol.io) para o **TOTVS Fluig**. Dá a um agente de IA —
 Claude Code, Claude Desktop, Cursor, ou qualquer cliente MCP — acesso às APIs REST e SOAP do
 Fluig: datasets, formulários, fichas, GED, eventos, agendador, processos BPM e a ponte para o
 TOTVS RM (Corpore).
 
-**97 ferramentas**, homologação e produção no mesmo servidor, sem abrir o Fluig Studio.
+**98 ferramentas**, homologação e produção no mesmo servidor, sem abrir o Fluig Studio.
 
 ```
 ┌──────────────┐      stdio/MCP      ┌───────────┐   REST v1/v2   ┌──────────────┐
 │ Claude Code  │ ◄─────────────────► │ fluig-mcp │ ◄────────────► │ TOTVS Fluig  │
-│  (ou outro)  │                     │ 97 tools  │   SOAP/WSDL    │   + RM       │
+│  (ou outro)  │                     │ 98 tools  │   SOAP/WSDL    │   + RM       │
 └──────────────┘                     └───────────┘                └──────────────┘
 ```
 
@@ -72,6 +72,8 @@ servidor de outra pessoa.
 | `FLUIG_HOST` · `FLUIG_USER` · `FLUIG_PASS` (ou `FLUIG_PASS_CMD`) | homologação (`env: "teste"`) | para usar homologação |
 | `FLUIG_HOST_PROD` · `FLUIG_USER_PROD` · `FLUIG_PASS_PROD` (ou `FLUIG_PASS_CMD_PROD`) | produção (`env: "prod"`) | para usar produção |
 | `FLUIG_PASS_CMD` · `FLUIG_PASS_CMD_PROD` | no lugar da senha: comando que a imprime (cofre do sistema) | não |
+| `FLUIG_COOKIE_CMD` · `FLUIG_COOKIE_CMD_PROD` | no lugar da senha, para tenant com MFA ou SSO: comando que imprime o cookie de sessão (sem `login.do`) | não |
+| `FLUIG_COOKIE_TIMEOUT_MS` | espera máxima do comando de cookie, em milissegundos (padrão `120000`, o tempo para aprovar o MFA); vale para os dois ambientes | não |
 | `FLUIG_USERCODE` · `FLUIG_USERCODE_PROD` | código do colaborador; sem ele, é descoberto pela sessão | não |
 | `FLUIG_SAIDA_DIR` | pasta onde `destino` grava e de onde sai o arquivo que sobe ao Fluig (`caminhoLocal`, `zipPath`, `xmlPath`, `svgPath`); padrão `~/fluig-mcp-saida`, fora dela é recusado | não |
 | `FLUIG_READONLY=1` | ambos | não — mas leia [Segurança](#segurança) |
@@ -108,6 +110,29 @@ se ele pedir desbloqueio, é a hora). Trocou a senha no cofre? Reinicie o client
 
 No GitHub Copilot (VS Code) não precisa disso: o próprio VS Code pede a senha e a guarda (exemplo em
 [docs/clientes.md](docs/clientes.md#github-copilot-vs-code)).
+
+Se o tenant exige MFA ou SSO, a senha do cofre não entra no login: nesse caso, use o
+[cookie de sessão](#tenant-com-mfa-ou-sso-cookie-de-sessão), que dispensa a senha.
+
+### Tenant com MFA ou SSO: cookie de sessão
+
+Quando o login com usuário e senha não serve (MFA ou SSO), `FLUIG_COOKIE_CMD` (e `FLUIG_COOKIE_CMD_PROD`)
+recebe um comando que imprime o cookie de sessão já aberto: `JSESSIONIDSSO=…` ou `jwt.token=…`. Roda sem
+shell, com as mesmas regras de aspas do `FLUIG_PASS_CMD`, e a saída inteira é lida. Nesse modo:
+
+- não há senha, e o cliente **nunca** chama `login.do` nem tenta a senha, nem quando o cookie falha. Cada
+  tentativa de senha recusada pelo servidor conta contra o bloqueio da conta;
+- cookie recusado dá erro com a instrução de gerar outro e rodar `fluig_session_reset`. O comando não roda
+  de novo sozinho: o reset é o que libera a próxima execução. Vale também quando o próprio comando falha
+  (cofre bloqueado, MFA recusado, saída sem cookie), porque cada execução pode disparar outro desafio;
+- o comando não trava o servidor: enquanto ele espera o cofre ou a aprovação do MFA, as outras ferramentas
+  continuam. A espera máxima é `FLUIG_COOKIE_TIMEOUT_MS` (padrão 120 s), e o estouro aparece na mensagem;
+- `fluig_version` mostra só os nomes dos cookies, nunca o valor;
+- as operações que falam com os serviços SOAP do Fluig (`ECMDatasetService`, `ECMCardIndexService`,
+  `WorkflowEngineService` e `TokenService`) ficam indisponíveis e são recusadas antes de qualquer chamada,
+  porque levam usuário e senha no corpo da requisição. As que usam a API REST funcionam com o cookie.
+
+Não combine com `FLUIG_PASS` nem com `FLUIG_PASS_CMD` no mesmo ambiente: a configuração recusa a combinação.
 
 Configuração de cada cliente (Claude Code, Codex, GitHub Copilot, Cursor, Claude Desktop):
 [docs/clientes.md](docs/clientes.md).
@@ -163,8 +188,10 @@ FLUIG_READONLY=1 node server.js --list   # 60 ferramentas, nenhuma de escrita
 
 **Confirmação explícita.** Toda ferramenta de escrita declara `confirm`. As estruturais e
 destrutivas o exigem em qualquer ambiente, e as destrutivas (`fluig_process_convert_instances`,
-`fluig_rm_save_record`) devolvem um **dry-run** com o plano antes de executar qualquer coisa. As
-do ciclo de desenvolvimento exigem `confirm: true` só em produção e passam direto em homologação:
+`fluig_rm_save_record`, `fluig_globalevent_delete`) devolvem um **dry-run** com o plano antes de executar
+qualquer coisa: sem `confirm: true`, nada é alterado.
+
+As do ciclo de desenvolvimento exigem `confirm: true` só em produção e passam direto em homologação:
 `fluig_dataset_save`, `fluig_dataset_enable`, `fluig_globalevent_save`,
 `fluig_workflow_events_update`, `fluig_form_save`, `fluig_process_start`, `fluig_process_move`,
 `fluig_process_take`, `fluig_rest_post`, `fluig_job_add`, `fluig_job_delete` e `fluig_job_run`.
@@ -248,9 +275,10 @@ Para reportar vulnerabilidade, veja [SECURITY.md](SECURITY.md).
 `fluig_rm_query` · **!** `fluig_rm_db_query` · **!** `fluig_rm_db_exec` ·
 **!** `fluig_rm_dataserver_schema` · **!** `fluig_rm_save_record` · **!** `fluig_service_list`
 
-**Agendador** (4) · **Eventos globais** (2) · **Diagnóstico** (7)
+**Agendador** (4) · **Eventos globais** (3) · **Diagnóstico** (7)
 `fluig_jobs_list` · **!** `fluig_job_add` · **!** `fluig_job_delete` · **!** `fluig_job_run` ·
-`fluig_globalevent_list` · **!** `fluig_globalevent_save` · `fluig_ping` · `fluig_version` ·
+`fluig_globalevent_list` · **!** `fluig_globalevent_save` · **!** `fluig_globalevent_delete` ·
+`fluig_ping` · `fluig_version` ·
 `fluig_session_reset` · `fluig_user_replacements` · `fluig_rest_get` · **!** `fluig_rest_post` ·
 **!** `fluig_db_query`
 
@@ -326,6 +354,12 @@ Do fork dele vieram também três decisões de projeto que este repositório ado
 **configuração sem defaults** (endpoint ou senha embutidos são vazamento esperando acontecer),
 **modo somente leitura** e **`--list` auditável sem credencial** — a ideia de que a superfície de
 ferramentas precisa ser inspecionável antes de o servidor receber uma senha, hoje verificada no CI.
+
+**[Fluiggers](https://github.com/fluiggers/fluig-vscode-extension)** (MIT, © Bruno Gasparetto e
+colaboradores) — a extensão VS Code da comunidade. Daqui vem o comportamento que
+[`src/datasetFiltros.js`](src/datasetFiltros.js) reproduz: a tradução de condições de consulta de
+dataset para as constraints do Fluig. As rotas de eventos de processo em [`src/client.js`](src/client.js)
+usam o FluiggersWidget, publicado pelo projeto deles ([fluig-widget-helper](https://github.com/fluiggers/fluig-widget-helper)).
 
 ## Licença
 

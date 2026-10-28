@@ -50,7 +50,7 @@ jobs:
         shell: bash
         run: |
           node server.js --list
-          test "$(node server.js --list | grep -cE 'fluig_[a-z_0-9]+:')" -eq 97
+          test "$(node server.js --list | grep -cE 'fluig_[a-z_0-9]+:')" -eq 98
 
       - name: Modo somente leitura não expõe nenhuma escrita
         shell: bash

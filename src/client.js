@@ -6,6 +6,7 @@ import net from 'node:net';
 // UND_ERR_INVALID_ARG, porque o dispatcher precisa ser da mesma cópia da undici.
 import { Agent, fetch } from 'undici';
 import { conferirDestino, gravarNaSaida, lerNaSaida } from './saida.js';
+import { cookieDoComando } from './config.js';
 
 /**
  * Cliente da API do TOTVS Fluig — headless (sem IDE). Replica o protocolo da
@@ -48,6 +49,46 @@ async function retry(fn, tries = 4, baseMs = 400) {
 const SESSAO_REVALIDAR_MS = 20 * 60_000;
 
 /**
+ * Modo cookie (FLUIG_COOKIE_CMD): o comando não roda de novo sozinho depois de um cookie recusado ou de uma
+ * falha do próprio comando. Cada execução pode disparar outro desafio de MFA, então só o reset libera outra.
+ */
+const COOKIE_EXPIRADO = 'cookie de sessão expirado: gere outro e rode fluig_session_reset '
+  + '(o comando de cookie não roda de novo nesta chamada).';
+const COOKIE_COMANDO_FALHOU = 'o comando de cookie já falhou nesta sessão e não roda de novo sozinho: '
+  + 'corrija o comando ou o cofre e rode fluig_session_reset.';
+
+/** Marcador que substitui o cookie em qualquer mensagem que vá sair do cliente. */
+const MARCADOR_COOKIE = '<cookie>';
+
+/**
+ * Troca o cookie por um marcador numa mensagem de erro. O undici ecoa o header recusado inteiro na mensagem
+ * ("Headers.append: \"...\" is an invalid header value"), e essa mensagem sai pela ferramenta.
+ * Troca o cookie inteiro e depois cada par nome=valor, para pegar também um eco parcial.
+ */
+function ocultarCookie(texto, cookie) {
+  let limpo = String(texto);
+  if (!cookie) return limpo;
+  limpo = limpo.split(cookie).join(MARCADOR_COOKIE);
+  for (const par of String(cookie).split('; ')) {
+    if (par.includes('=')) limpo = limpo.split(par).join(MARCADOR_COOKIE);
+  }
+  return limpo;
+}
+
+/** O mesmo erro, com o cookie oculto na mensagem. Se a mensagem não tinha cookie, devolve o próprio erro. */
+function erroSemCookie(e, cookie) {
+  const original = String(e?.message ?? e);
+  const limpa = ocultarCookie(original, cookie);
+  if (limpa === original) return e;
+  const erro = new Error(limpa);
+  if (e?.code !== undefined) erro.code = e.code;
+  return erro;
+}
+
+/** Rota de versão do Studio: o diagnóstico (fluig_version) lê a versão do servidor daqui. */
+const ROTA_VERSAO_FLUIG = '/ecm/api/rest/ecm/studioWorkflowRest/version';
+
+/**
  * True quando a resposta significa "sua sessão acabou", e não uma resposta de verdade.
  *
  * O Fluig puro responde 401 ou devolve a página de login; um Fluig atrás do Fluig Identity
@@ -74,7 +115,49 @@ export function sessaoExpirada(status, text = '', contentType = '') {
     .test(corpo);
 }
 
+/**
+ * Texto do erro que o servidor devolveu. O formato real é aninhado, { message: { message: '...' } }, como a
+ * extensão Fluiggers lê; o texto plano também é aceito. Corpo que não é JSON vira o status HTTP, e nada disso
+ * deixa "[object Object]" chegar à mensagem.
+ */
+function motivoDoServidor(r) {
+  if (r?._blocked) return 'página de bloqueio da rede';
+  if (typeof r?.message === 'string') return r.message;
+  if (typeof r?.message?.message === 'string') return r.message.message;
+  if (typeof r?.content === 'string') return r.content;
+  if (r?._raw !== undefined) return `HTTP ${r._status}, resposta não-JSON`;
+  return JSON.stringify(r);
+}
+
+/**
+ * Forma comparável de uma lista de eventos globais. A ordem em que o servidor devolve os eventos não conta;
+ * o conteúdo inteiro conta, porque o save regrava cada objeto como veio, e uma edição em qualquer um deles
+ * seria desfeita.
+ */
+function assinaturaDaLista(lista) {
+  const ordenada = [...lista].sort((a, b) => String(a.globalEventPK?.eventId).localeCompare(String(b.globalEventPK?.eventId)));
+  return JSON.stringify(ordenada);
+}
+
 const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
+
+/**
+ * Espera `promessa` por no máximo `ms`. O timer é desarmado quando a promessa termina, então nada fica
+ * aberto no event loop; o withTimeout acima deixa o timer vivo até estourar. O pedido que ficou para trás
+ * não é abortado: só deixa de ser esperado. O erro leva `limiteDeTempo` para quem chamou distinguir.
+ * `dica`, quando houver, vai no fim da mensagem de estouro.
+ */
+function comLimiteDeTempo(promessa, ms, descricao, dica = '') {
+  let timer;
+  const prazo = new Promise((_, rej) => {
+    timer = setTimeout(() => {
+      const erro = new Error(`${descricao} sem resposta em ${ms / 1000} s${dica ? ` — ${dica}` : ''}`);
+      erro.limiteDeTempo = true;
+      rej(erro);
+    }, ms);
+  });
+  return Promise.race([promessa, prazo]).finally(() => clearTimeout(timer));
+}
 
 /** Testa conexão TCP a um IP:porta. Resolve true/false, nunca lança. */
 function tcpOk(ip, port, timeout = 2500) {
@@ -123,14 +206,22 @@ export class FluigClient {
     this.isProd = !!cfg.isProd;
     this.user = cfg.user;
     this.pass = cfg.pass;
+    // Modo cookie (FLUIG_COOKIE_CMD, para MFA ou SSO): a sessão vem de fora e nunca passa pelo login.do.
+    this.cookieCmd = cfg.cookieCmd || null;
+    this._varCookieCmd = cfg.isProd ? 'FLUIG_COOKIE_CMD_PROD' : 'FLUIG_COOKIE_CMD';
+    // Motivo do bloqueio do comando de cookie nesta sessão (null = pode rodar). Ver _sessaoDoCookie.
+    this._cookieBloqueio = null;
+    this._cookieTimeoutMs = cfg.cookieTimeoutMs;
     this.companyId = cfg.companyId;
     this.userCode = cfg.userCode || cfg.user;
     this._varUserCode = cfg.isProd ? 'FLUIG_USERCODE_PROD' : 'FLUIG_USERCODE';
     this._userCodeOrigem = cfg.userCode ? this._varUserCode : null; // null = ainda não descoberto
     this._descobertaTimeoutMs = 15_000;
+    this._versaoTimeoutMs = 15_000; // limite da consulta de versão do diagnóstico (ver _versaoDoServidor)
     this._cookie = null;
     this._cookieAt = 0; // quando o cookie foi confirmado válido pela última vez
     this._soap = {};
+    this._filaEventos = Promise.resolve(); // escritas de eventos globais, uma por vez (ver _naFilaDeEventos)
     const u = new URL(this.host);
     this._proto = u.protocol;                       // 'http:' | 'https:'
     this._hostname = u.hostname;                     // fluig-homolog.exemplo.com.br
@@ -211,8 +302,11 @@ export class FluigClient {
    * resolvedor do Node e tornava `FLUIG_IPS` código morto — apontado na revisão do PR #1 por
    * sourcery-ai e qodo-code-review, e confirmado aqui. Por isso a conexão é fixada via
    * dispatcher, preservando as duas garantias.
+   *
+   * `semRepetir` faz uma tentativa só, sem o retry de erro de transporte. É para escrita que não pode ser
+   * mandada duas vezes (o DELETE de evento global), em que a segunda chegada pode já encontrar o efeito feito.
    */
-  async _fetch(path, opts = {}) {
+  async _fetch(path, { semRepetir = false, ...opts } = {}) {
     return retry(async () => {
       const { ip } = await this._liveBase();
       const headers = { ...(opts.headers || {}), Host: this._hostHeader };
@@ -221,9 +315,10 @@ export class FluigClient {
         return await fetch(`${this.host}${path}`, { ...opts, headers, ...(dispatcher ? { dispatcher } : {}) });
       } catch (e) {
         this._bustIp(); // o endereço sondado pode ter caído: re-sonda na próxima tentativa
-        throw e;
+        // Um header recusado faz o undici ecoar o cookie no erro: ele não pode sair por essa mensagem.
+        throw erroSemCookie(e, opts.headers?.Cookie);
       }
-    });
+    }, semRepetir ? 1 : 4);
   }
 
   /**
@@ -267,12 +362,17 @@ export class FluigClient {
     if (this._cookie) {
       // Parado tempo suficiente para ter expirado no servidor: confirma antes de reaproveitar.
       const visto = this._cookie;
-      if ((await this._sessaoViva(visto)) !== false) {
-        if (this._cookie === visto) this._cookieAt = Date.now();
+      const viva = await this._sessaoViva(visto);
+      if (viva !== false) {
+        // Só o "sim" do servidor renova a validade. Um ping inconclusivo (null) mantém o cookie, mas não o dá
+        // por confirmado: a próxima chamada pergunta de novo.
+        if (viva === true && this._cookie === visto) this._cookieAt = Date.now();
         return this._cookie || visto;
       }
       this._descartarSessao(visto);
     }
+    // Modo cookie: a sessão não passa pelo login.do, então a ausência de senha aqui é o esperado.
+    if (this.cookieCmd) return this._sessaoDoCookie();
     // Sem senha configurada, NÃO tentar: uma tentativa de login com credencial ausente/errada
     // gasta uma das 3 do lockoutThreshold do AD. Falhar aqui é de graça; falhar na rede custa
     // a conta do usuário (caso real de bloqueio por senha antiga).
@@ -338,6 +438,33 @@ export class FluigClient {
   }
 
   /**
+   * Modo cookie (FLUIG_COOKIE_CMD, tenant com MFA ou SSO): o cookie vem de quem já se autenticou, e
+   * o cliente NÃO chama login.do nem cai para senha quando ele falha. Cada tentativa de senha recusada
+   * pelo servidor conta contra o bloqueio da conta.
+   *
+   * Cookie recusado não gera outro sozinho: _descartarSessao deixa a sessão marcada como expirada, e só
+   * fluig_session_reset libera outra execução do comando. Sem essa trava, um comando que devolve sempre o
+   * mesmo cookie velho faria laço dentro de uma única chamada.
+   *
+   * O mesmo vale para o comando que FALHA (cofre bloqueado, MFA recusado, saída sem cookie): cada execução
+   * pode disparar outro desafio ao usuário, então a falha também trava até o reset.
+   */
+  async _sessaoDoCookie() {
+    if (this._cookieBloqueio) throw new Error(this._cookieBloqueio);
+    let cookie;
+    try {
+      cookie = await cookieDoComando(this.cookieCmd, this._varCookieCmd, this._cookieTimeoutMs);
+    } catch (e) {
+      this._cookieBloqueio = COOKIE_COMANDO_FALHOU;
+      throw e;
+    }
+    this._cookie = cookie;
+    this._cookieAt = Date.now();
+    await this._descobrirUserCode(cookie);
+    return this._cookie || cookie;
+  }
+
+  /**
    * Descarta a sessão em memória. Os clientes SOAP vão junto: cada um carrega o cookie antigo
    * num header fixo e precisa ser recriado depois do novo login.
    *
@@ -349,13 +476,17 @@ export class FluigClient {
     this._cookie = null;
     this._cookieAt = 0;
     this._soap = {};
+    // No modo cookie, descartar é sessão recusada: o próximo login não roda o comando de novo.
+    if (this.cookieCmd) this._cookieBloqueio = COOKIE_EXPIRADO;
   }
 
   /**
    * Pergunta ao servidor se `cookie` ainda abre sessão (sem seguir redirecionamento).
-   * true = viva · false = o servidor respondeu e a sessão acabou · null = não deu para saber (rede,
-   * 5xx, bloqueio de IPS). "Não sei" não é "morta": derrubar a sessão por isso gastaria um login à toa,
-   * e a própria requisição seguinte detecta a sessão expirada se for o caso.
+   * true = viva · false = o servidor disse que a sessão acabou (a mesma regra de sessaoExpirada, ou um
+   * redirecionamento sem pong, que é como o portal manda para a tela de login) · null = não deu para saber:
+   * rede, 5xx, bloqueio de IPS, ou uma resposta sem pong que não é rejeição de sessão (um 404 sem relação,
+   * por exemplo). "Não sei" não é "morta": derrubar a sessão por isso gastaria um login à toa, e a própria
+   * requisição seguinte detecta a sessão expirada se for o caso.
    */
   async _sessaoViva(cookie) {
     let r;
@@ -371,7 +502,10 @@ export class FluigClient {
     const text = await r.text().catch(() => '');
     if (r.ok && text.includes('pong')) return true;
     if (r.status >= 500 || /FortiGuard|Web Filter Violation|Web Page Blocked/i.test(text)) return null;
-    return false;
+    // Redirecionamento sem pong: o portal levou o ping para a tela de login, e isso é sessão acabada.
+    if (r.status >= 300 && r.status < 400) return false;
+    // Só rejeição definitiva conta como sessão morta; o resto é "não sei", e o cookie é mantido.
+    return sessaoExpirada(r.status, text, r.headers?.get?.('content-type')) ? false : null;
   }
 
   /**
@@ -429,7 +563,7 @@ export class FluigClient {
     return false;
   }
 
-  async _rest(path, { method = 'GET', body, form = false } = {}) {
+  async _rest(path, { method = 'GET', body, form = false, semRepetir = false } = {}) {
     const headers = { Cookie: await this.login(), Accept: 'application/json' };
     if (body) headers['Content-Type'] = form ? 'application/x-www-form-urlencoded' : 'application/json';
     // O IP "vivo" cacheado por _liveBase() às vezes cai numa rota que o IPS/Fortinet do
@@ -440,11 +574,13 @@ export class FluigClient {
     // Sessão expirada (401, página de login ou o desvio SAML do Fluig Identity) não é bloqueio
     // de rede: loga de novo e repete UMA vez. Se continuar expirada, devolve o _raw em vez de
     // insistir — novo login em laço gastaria tentativas do AD.
+    // Com semRepetir (escrita que não pode ser mandada duas vezes), nem a página de bloqueio nem a sessão
+    // expirada são reenviadas: a resposta volta como _raw, e quem chamou confere o efeito antes de concluir.
     let relogou = false;
     for (let attempt = 0; attempt < 3; attempt++) {
-      const r = await this._fetch(path, { method, headers, body });
+      const r = await this._fetch(path, { method, headers, body, semRepetir });
       const text = await r.text();
-      if (!relogou && sessaoExpirada(r.status, text, r.headers?.get?.('content-type'))) {
+      if (!relogou && !semRepetir && sessaoExpirada(r.status, text, r.headers?.get?.('content-type'))) {
         relogou = true;
         this._descartarSessao(headers.Cookie);
         headers.Cookie = await this.login();
@@ -453,7 +589,7 @@ export class FluigClient {
       }
       try { return JSON.parse(text); } catch { /* segue pro fallback abaixo */ }
       const blocked = /FortiGuard|Web Filter Violation|Web Page Blocked/i.test(text);
-      if (blocked && attempt < 2) { this._bustIp(); continue; }
+      if (blocked && attempt < 2 && !semRepetir) { this._bustIp(); continue; }
       return { _status: r.status, _raw: text, _blocked: blocked };
     }
   }
@@ -470,6 +606,12 @@ export class FluigClient {
    * raiz, que estava em DOIS lugares. O SOAP tinha ficado de fora.
    */
   async _soapClient(wsdlPath) {
+    // No modo cookie não há senha, e estas operações levam usuário e senha no corpo. Mandar a senha vazia
+    // seria uma tentativa de login que o servidor pode contar contra a conta: recusa antes de qualquer chamada.
+    if (this.cookieCmd) {
+      throw new Error(`Operação SOAP (${wsdlPath}) indisponível com ${this._varCookieCmd}: ela exige senha no corpo `
+        + 'da requisição, e o modo cookie não tem senha.');
+    }
     // login() ANTES do cache: é ele que revalida um cookie parado. O cliente em cache só vale
     // se foi criado com o cookie atual — cada cliente leva o cookie num header fixo.
     const cookie = await this.login();
@@ -692,21 +834,127 @@ export class FluigClient {
     return this._rest('/ecm/api/rest/ecm/globalevent/getEventList');
   }
 
+  /**
+   * Roda uma escrita de eventos globais depois da anterior. As escritas (save e delete) leem a lista inteira
+   * e regravam ou apagam a partir dela: uma escrita que termina entre o GET e o POST de outra faz a outra
+   * gravar a lista antiga, e o evento apagado volta. Uma fila por cliente encerra essa corrida. A fila não
+   * para em erro: a rejeição vai para quem chamou, e a próxima escrita segue normalmente.
+   */
+  _naFilaDeEventos(tarefa) {
+    const rodada = this._filaEventos.then(tarefa);
+    this._filaEventos = rodada.catch(() => {});
+    return rodada;
+  }
+
   async saveGlobalEvent(eventId, code) {
-    const list = await this.listGlobalEvents();
-    // A rota grava a LISTA INTEIRA: partir de [] quando a leitura falha apagaria os outros eventos.
-    if (!Array.isArray(list)) {
-      throw new Error(`saveGlobalEvent: não consegui ler a lista atual de eventos globais (HTTP ${list?._status ?? '?'}). `
-        + 'Nada foi gravado — gravar sem ela apagaria os outros eventos.');
-    }
-    const arr = list.slice();
-    const dto = { globalEventPK: { companyId: this.companyId, eventId }, eventDescription: code };
-    const idx = arr.findIndex(e => e.globalEventPK && e.globalEventPK.eventId === eventId);
-    if (idx === -1) arr.push(dto); else arr[idx] = dto;
-    // Pelo _rest, para recuperar a sessão: sem ela esta rota antiga devolve 500 com UT010031.
-    return this._rest('/ecm/api/rest/ecm/globalevent/saveEventList', {
-      method: 'POST', form: true, body: JSON.stringify(arr),
+    return this._naFilaDeEventos(async () => {
+      const list = await this.listGlobalEvents();
+      // A rota grava a LISTA INTEIRA: partir de [] quando a leitura falha apagaria os outros eventos.
+      if (!Array.isArray(list)) {
+        throw new Error(`saveGlobalEvent: não consegui ler a lista atual de eventos globais (${motivoDoServidor(list)}). `
+          + 'Nada foi gravado — gravar sem ela apagaria os outros eventos.');
+      }
+      const arr = list.slice();
+      const dto = { globalEventPK: { companyId: this.companyId, eventId }, eventDescription: code };
+      const idx = arr.findIndex(e => e.globalEventPK && e.globalEventPK.eventId === eventId);
+      if (idx === -1) arr.push(dto); else arr[idx] = dto;
+      // Relê a lista logo antes do POST. Se outro escritor mudou algum evento desde a leitura inicial, gravar
+      // esta cópia desfaria a mudança. A janela é reduzida, não eliminada: o Fluig não oferece token de versão
+      // para a lista, então uma escrita externa que caia entre esta releitura e o POST ainda passa.
+      const agora = await this.listGlobalEvents();
+      if (!Array.isArray(agora)) {
+        throw new Error(`saveGlobalEvent: não consegui reler a lista antes de gravar (${motivoDoServidor(agora)}). `
+          + 'Nada foi gravado.');
+      }
+      if (assinaturaDaLista(agora) !== assinaturaDaLista(list)) {
+        throw new Error('saveGlobalEvent: a lista mudou durante a gravação; nada foi gravado, tente de novo.');
+      }
+      // Pelo _rest, para recuperar a sessão: sem ela esta rota antiga devolve 500 com UT010031.
+      return this._rest('/ecm/api/rest/ecm/globalevent/saveEventList', {
+        method: 'POST', form: true, body: JSON.stringify(arr),
+      });
     });
+  }
+
+  /**
+   * APAGA um evento global pelo id. A rota aceita um evento por chamada, e cada chamada leva o seu
+   * próprio nome: excluir vários com um forEach assíncrono é o que fazia só o último sumir (issue 97
+   * da extensão Fluiggers). Sucesso é `content: 'OK'` exato.
+   *
+   * Apagar não tem volta, então o DELETE vai uma vez só, sem repetição de rede. Se a resposta não
+   * confirmar, ou se a chamada cair, a função não chuta: relê a lista (ver _conferirExclusao). Evento que
+   * sumiu foi apagado, e a função devolve sucesso com `eventoApagado`. Evento que ficou, ou lista ilegível,
+   * é erro com o motivo e com o código na mensagem.
+   *
+   * Sem `confirm: true` é DRY-RUN: lê a lista e devolve o evento que seria apagado, sem excluir nada (o
+   * mesmo padrão de convertProcessInstances). Com confirm, a resposta de sucesso traz o código apagado em
+   * `eventoApagado`, para restaurar com saveGlobalEvent se for preciso.
+   */
+  async deleteGlobalEvent(eventId, { confirm = false } = {}) {
+    if (typeof eventId !== 'string' || !eventId.trim()) {
+      throw new Error('deleteGlobalEvent: eventId obrigatório (texto não vazio). Nada foi apagado.');
+    }
+    if (confirm !== true) {
+      const alvo = await this._eventoGlobal(eventId);
+      return {
+        dryRun: true,
+        seriaApagado: alvo,
+        aviso: 'Apagar é irreversível: o código acima é o que se perde. Para apagar de verdade, chame de novo com confirm: true.',
+      };
+    }
+    return this._naFilaDeEventos(async () => {
+      const alvo = await this._eventoGlobal(eventId);
+      let r;
+      try {
+        r = await this._rest(
+          `/ecm/api/rest/ecm/globalevent/deleteGlobalEvent?eventName=${encodeURIComponent(eventId)}`,
+          { method: 'DELETE', semRepetir: true },
+        );
+      } catch (erro) {
+        return this._conferirExclusao(eventId, alvo, { erro });
+      }
+      if (r?.content === 'OK') return { ...r, eventoApagado: alvo };
+      return this._conferirExclusao(eventId, alvo, { resposta: r });
+    });
+  }
+
+  /**
+   * Chamada quando o DELETE não confirmou a exclusão: a resposta veio sem `content: 'OK'` ou a chamada
+   * falhou. O servidor pode ter apagado mesmo assim, com a resposta perdida, e o código só existe em `alvo`.
+   * Relê a lista para saber o estado real. Se o evento não está mais nela, a exclusão aconteceu e a função
+   * devolve sucesso com `eventoApagado`. Se ainda está, ou se a lista não pode ser relida, erra com o motivo
+   * e com o código na mensagem, para que ele não se perca.
+   */
+  async _conferirExclusao(eventId, alvo, { resposta, erro }) {
+    const motivo = erro ? `falha na chamada (${erro.message})` : motivoDoServidor(resposta);
+    const lista = await this.listGlobalEvents().catch(() => null);
+    if (Array.isArray(lista) && !lista.some(e => e.globalEventPK?.eventId === eventId)) {
+      return {
+        confirmadoPelaLista: true,
+        eventoApagado: alvo,
+        aviso: `o servidor não confirmou a exclusão (${motivo}), mas o evento não está mais na lista: a exclusão aconteceu.`,
+      };
+    }
+    const situacao = Array.isArray(lista)
+      ? 'o evento continua na lista'
+      : 'não consegui reler a lista para saber se o evento ficou';
+    throw new Error(`deleteGlobalEvent(${eventId}): o servidor não confirmou a exclusão — ${motivo}; ${situacao}. `
+      + `Código antes de apagar: ${alvo.code}`);
+  }
+
+  /**
+   * O evento pelo id, com o código que ele tem agora. Recusa quando a lista não pode ser lida: sem ela não
+   * há cópia do código para devolver, e apagar sem essa cópia é apagar sem volta.
+   */
+  async _eventoGlobal(eventId) {
+    const lista = await this.listGlobalEvents();
+    if (!Array.isArray(lista)) {
+      throw new Error(`deleteGlobalEvent(${eventId}): não consegui ler a lista de eventos globais (${motivoDoServidor(lista)}). `
+        + 'Nada foi apagado — sem a lista não há cópia do código para restaurar.');
+    }
+    const achado = lista.find(e => e.globalEventPK && e.globalEventPK.eventId === eventId);
+    if (!achado) throw new Error(`deleteGlobalEvent(${eventId}): não existe evento global com esse id. Nada foi apagado.`);
+    return { eventId, code: achado.eventDescription };
   }
 
   // ---------- Workflow (eventos de processo — requer FluiggersWidget) ----------
@@ -736,8 +984,18 @@ export class FluigClient {
       headers: { Cookie: cookie, 'Content-Type': 'application/json' },
       body: JSON.stringify(events),
     });
+    const texto = await r.text();
+    // Sessão expirada não é falta do FluiggersWidget: a gravação não aconteceu. O cookie recusado sai do
+    // cache, e a mensagem diz como seguir em cada modo (ver _descartarSessao para o modo cookie).
+    if (sessaoExpirada(r.status, texto, r.headers.get('content-type'))) {
+      this._descartarSessao(cookie);
+      const orientacao = this.cookieCmd
+        ? 'sessão expirada: gere outro cookie e rode fluig_session_reset'
+        : 'sessão expirada: tente de novo (o próximo login é automático)';
+      throw new Error(`updateWorkflowEvents: ${orientacao}. Nada foi gravado.`);
+    }
     if (!r.ok) throw new Error(`Falha ao gravar eventos (HTTP ${r.status}). FluiggersWidget instalado?`);
-    return r.json();
+    return JSON.parse(texto);
   }
 
   // ---------- Passthrough REST (escape hatch) ----------
@@ -1499,6 +1757,7 @@ export class FluigClient {
     const antes = this._cookie ? this._cookie.split('; ').map(c => c.split('=')[0]) : [];
     this._descartarSessao();
     this._loginRecusado = false; // liberação explícita de quem opera: UMA nova tentativa
+    this._cookieBloqueio = null; // e, no modo cookie, UMA nova execução do comando
 
     this._bustIp?.();
     const novo = await this.login();
@@ -1509,20 +1768,66 @@ export class FluigClient {
     };
   }
 
-  /** P0#2 — Diagnóstico: quem eu sou, onde estou, com que cookies. Mata a dúvida "qual MCP roda". */
+  /**
+   * P0#2 — Diagnóstico: quem eu sou, onde estou, com que cookies, e a versão do servidor Fluig.
+   * Mata a dúvida "qual MCP roda". A versão nunca derruba o diagnóstico (ver _versaoDoServidor).
+   */
   async versionInfo() {
+    // O login não tem limite próprio aqui: é pré-requisito, e no modo cookie pode estar esperando o MFA, que
+    // tem o seu (FLUIG_COOKIE_TIMEOUT_MS). Um limite de 15 s cortaria a aprovação no celular.
     const cookie = this._cookie || (await this.login());
     const nomes = cookie.split('; ').map(c => c.split('=')[0]);
     let usuario = null;
     try {
-      const ui = await this._rest('/authentication/api/v1/login/user-info');
+      // Com limite, como a consulta da versão: um servidor que não responde não trava o diagnóstico.
+      const ui = await comLimiteDeTempo(
+        this._rest('/authentication/api/v1/login/user-info'),
+        this._versaoTimeoutMs,
+        'consulta do usuário',
+      );
       if (ui && !ui._raw) usuario = { id: ui.id, code: ui.code, admin: ui.admin, tenant: ui.tenantDescription };
     } catch { /* diagnóstico não pode derrubar o diagnóstico */ }
+    const versao = await this._versaoDoServidor();
     return {
       ambiente: this.envName, isProd: this.isProd, host: this.host,
       cookies: nomes, temJwtToken: nomes.includes('jwt.token'), usuario,
       colleagueId: this.userCode, colleagueIdOrigem: this._userCodeOrigem,
+      servidorVersao: versao.servidorVersao, servidorVersaoErro: versao.servidorVersaoErro,
     };
+  }
+
+  /**
+   * Versão do Fluig, lida da rota de versão do Studio. Devolve `servidorVersao` (x.y.z), ou `null`
+   * com `servidorVersaoErro` curto. NUNCA lança: o diagnóstico precisa responder com o servidor
+   * fora do ar, a rota ausente ou a sessão recusada.
+   *
+   * O corpo não tem formato garantido, então o número sai de um regex. Corpo que começa com '<' é
+   * página (login ou erro), não versão: um x.y.z dentro dela não conta.
+   */
+  async _versaoDoServidor() {
+    try {
+      // Com limite: um servidor que aceita a conexão e não responde não pode travar o diagnóstico.
+      const r = await comLimiteDeTempo(
+        this._restRaw(ROTA_VERSAO_FLUIG, { accept: 'text/plain, application/json' }),
+        this._versaoTimeoutMs,
+        'consulta da versão',
+        // O _restRaw espera o login, e no modo cookie o login pode estar esperando o MFA.
+        this.cookieCmd ? 'no modo cookie, pode ser o login esperando o MFA (FLUIG_COOKIE_TIMEOUT_MS)' : '',
+      );
+      if (r.status < 200 || r.status >= 300) return { servidorVersao: null, servidorVersaoErro: `HTTP ${r.status}` };
+      const corpo = String(r.text || '').trim();
+      if (corpo.startsWith('<')) return { servidorVersao: null, servidorVersaoErro: 'resposta é HTML, não versão' };
+      const achado = corpo.match(/\d+\.\d+\.\d+/);
+      if (!achado) return { servidorVersao: null, servidorVersaoErro: 'resposta sem número de versão' };
+      return { servidorVersao: achado[0], servidorVersaoErro: null };
+    } catch (e) {
+      // O cookie também não pode sair por esta mensagem, mesmo quando a falha veio de fora do _fetch.
+      const msg = ocultarCookie(String(e?.message || e), this._cookie);
+      if (e?.limiteDeTempo) return { servidorVersao: null, servidorVersaoErro: msg };
+      // _restRaw já tentou um novo login; a sessão continuou recusada (401 ou página de login).
+      if (/sessão expirada/.test(msg)) return { servidorVersao: null, servidorVersaoErro: 'sessão expirada mesmo após novo login' };
+      return { servidorVersao: null, servidorVersaoErro: `consulta falhou: ${msg}`.slice(0, 120) };
+    }
   }
 
   /**
