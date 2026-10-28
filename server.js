@@ -261,7 +261,7 @@ const TOOLS = [
   {
     name: 'fluig_process_event_get',
     description: 'Lê o código de um evento de PROCESSO (serviceTask/beforeTaskSave) via event_proces — sem widget.',
-    inputSchema: S({ processCode: str('trecho do COD_DEF_PROCES, ex: WRH16'), eventName: str('ex: servicetask71'), version: num('NUM_VERS') }, ['processCode', 'eventName', 'version']),
+    inputSchema: S({ processCode: str('trecho do COD_DEF_PROCES, ex: PROC01'), eventName: str('ex: servicetask71'), version: num('NUM_VERS') }, ['processCode', 'eventName', 'version']),
     handler: async ({ processCode, eventName, version }) => (await client.getProcessEventCode(processCode, eventName, version)) || '(não encontrado)',
   },
   {
@@ -329,7 +329,7 @@ const TOOLS = [
   },
   {
     name: 'fluig_rm_query',
-    description: 'Consulta o RM (Corpore) pelo padrão MIP: ds_generic_rm_sql + sentença homologada WS.###. '
+    description: 'Consulta o RM (Corpore) via ds_generic_rm_sql + sentença homologada WS.###. '
       + 'READ-ONLY DE VERDADE: chama o dataset direto pelo dataset-handle/search, sem gravar nada no '
       + 'servidor. É o caminho preferido para ler o RM — use no lugar de fluig_rm_db_query sempre que '
       + 'houver sentença. Informe os campos esperados.',
@@ -349,7 +349,7 @@ const TOOLS = [
     name: 'fluig_process_start',
     description: 'INICIA uma solicitação (startProcess SOAP). cardData={campo:valor} do formulário. choosedState=estado destino ao concluir o início (ex.: gateway seguinte). Autentica como o usuário (precisa do papel de início). Retorna {processInstanceId(iProcess), rows}.',
     inputSchema: S({
-      processId: str('COD_DEF_PROCES (ex: "WRH16 - Solicitação e Avaliação Psicológica")'),
+      processId: str('COD_DEF_PROCES (ex: "PROC01 - Processo de exemplo")'),
       choosedState: num('estado destino (nº do próximo nó/gateway)'),
       cardData: { type: 'object', description: '{campo:valor} — MANDE TODOS os campos do form (a API substitui o card, não faz merge)' },
       colleagueIds: { type: 'array', items: { type: 'string' }, description: 'próximos responsáveis (opcional)' },
@@ -635,7 +635,7 @@ const TOOLS = [
     handler: async ({ path, body, form }) => client.restPost(path, body, !!form),
   },
 
-  // ─── API interna do Painel de Controle (mapeada em 15/09/2026) ────────────────
+  // ─── API interna do Painel de Controle ────────────────
   // Rotas que as telas /portal/p/1/wcmdatasetpage e /pagejobscheduler usam.
   // Não documentadas pela TOTVS; podem mudar entre versões do Fluig.
   {
@@ -1037,7 +1037,7 @@ const TOOLS = [
       + 'contadores de SLA. Responde "onde o fluxo está entalado" numa chamada. '
       + '⚠️ Só esta rota /resume aceita expand/interactives — as irmãs não. '
       + '⚠️ BUG DO PRODUTO: falha com javax.ejb.EJBException em ALGUNS processos (medido em produção: '
-      + 'WAP01 e aberturaDeVaga falham; WRH14_MovimentoFolha e WSUP05 funcionam), independente dos '
+      + 'processo-a e processo-b falham; processo-c e processo-d funcionam), independente dos '
       + 'parâmetros. Se cair nisso, use fluig_task_list/fluig_request_list filtrando por processo.',
     inputSchema: S({
       processId: str('id do processo'),
@@ -1163,7 +1163,7 @@ const TOOLS = [
   {
     name: 'fluig_rm_dataserver_schema',
     description: 'Contrato (schema) de um DataServer do RM — leia ANTES de tentar gravar no ERP. '
-      + 'Roda via ServiceManager → wsDataServer.getSchema, o padrão MIP. '
+      + 'Roda via ServiceManager → wsDataServer.getSchema, o padrão de datasets customizados. '
       + '⚠️ Grava um dataset para executar; em env="prod" exige confirm=true.',
     inputSchema: S({
       dataServerName: str('ex: FinLanBaixaData, RhuPessoaData'),
