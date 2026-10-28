@@ -1,6 +1,6 @@
 {
   "name": "fluig-mcp",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Servidor MCP para o TOTVS Fluig — datasets, formulários, GED, eventos e processos BPM pela API, em homologação e produção, sem o Fluig Studio.",
   "type": "module",
   "license": "MIT",

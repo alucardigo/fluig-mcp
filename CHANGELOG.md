@@ -3,7 +3,7 @@
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/);
 versionamento [SemVer](https://semver.org/lang/pt-BR/).
 
-## [Não lançada]
+## [1.3.0] — 2026-10-28
 
 ### Adicionado
 
@@ -192,6 +192,7 @@ no código.
 - `.gitignore` bloqueia `out/`, dumps e material de análise — são dados do cliente e código
   proprietário de terceiro.
 
+[1.3.0]: https://github.com/alucardigo/fluig-mcp/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/alucardigo/fluig-mcp/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/alucardigo/fluig-mcp/compare/e48538a...v1.1.0
 [1.0.0]: https://github.com/alucardigo/fluig-mcp/commit/e48538a
