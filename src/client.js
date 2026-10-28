@@ -275,7 +275,7 @@ export class FluigClient {
     }
     // Sem senha configurada, NÃO tentar: uma tentativa de login com credencial ausente/errada
     // gasta uma das 3 do lockoutThreshold do AD. Falhar aqui é de graça; falhar na rede custa
-    // a conta do usuário (incidente de data omitida).
+    // a conta do usuário (caso real de bloqueio por senha antiga).
     if (!this.pass) {
       throw new Error(
         `Sem senha configurada para ${this.host} — não vou tentar o login (cada tentativa ` +
@@ -299,7 +299,7 @@ export class FluigClient {
     // login.do em si — um 403 aqui não significa credencial errada, então re-sonda o IP e
     // tenta de novo antes de reportar falha de autenticação (evita alarme falso).
     // ⚠️ NUNCA repetir tentativa quando o servidor RESPONDEU e apenas rejeitou a credencial.
-    // Em data omitida este laço de 3 tentativas BLOQUEOU a conta AD do usuário
+    // Num caso real, este laço de 3 tentativas BLOQUEOU a conta AD do usuário
     // (lockoutThreshold do domínio = 3) porque a senha de PROD estava desatualizada.
     // Só re-tentar quando a resposta indica bloqueio de rede/IPS (403/5xx/sem resposta),
     // que é o cenário original para o qual o retry foi criado.
@@ -657,7 +657,7 @@ export class FluigClient {
       fileName: f.fileName,
       // Arquivos BINÁRIOS (png/jpg/etc) devem vir em f.contentBase64 — passar binário por
       // string utf8 CORROMPE o arquivo (aprendido na marra: quase quebrei o ícone de lixeira
-      // do formulario-exemplo ao republicar o form).
+      // do formulário de exemplo ao republicar o form).
       filecontent: f.contentBase64 != null
         ? f.contentBase64
         : Buffer.from(f.content, 'utf8').toString('base64'),
@@ -812,7 +812,7 @@ export class FluigClient {
 
   // ---------- RM via ds_generic_rm_sql (sentença homologada WS.###) ----------
   /**
-   * Consulta o RM pelo padrão do projeto: ds_generic_rm_sql + CODSENTENCA/CODCOLIGADA/CODAPLICACAO (+params).
+   * Consulta o RM via ds_generic_rm_sql + CODSENTENCA/CODCOLIGADA/CODAPLICACAO (+params).
    *
    * Antes esta função GRAVAVA um dataset (`ds_claude_rmquery`) a cada chamada só para poder
    * executá-lo — uma tool anunciada como read-only que escrevia no servidor e deixava rastro
@@ -1557,7 +1557,7 @@ export class FluigClient {
 
   /**
    * P0#4b — Contagem de tarefas.
-   * ⚠️ MEDIDO EM data omitida: sem filtro esta rota passa de 120 s no o servidor de homologação (varre a base inteira).
+   * ⚠️ MEDIDO: sem filtro esta rota passa de 120 s num servidor de homologação (varre a base inteira).
    * Por isso `processId` é obrigatório aqui — contagem global não é utilizável na prática.
    */
   async taskCount(params = {}) {
@@ -1875,15 +1875,14 @@ export class FluigClient {
     const p = `/process-management/api/v2/processes/${encodeURIComponent(processId)}`
       + `/process-versions/${encodeURIComponent(processVersion)}/states/activities/resume${qs}`;
     const r = await this._rest(p);
-    // ⚠️ MEDIDO EM PRODUÇÃO (data omitida): esta rota funciona em alguns processos (processo-c,
+    // ⚠️ MEDIDO EM PRODUÇÃO: esta rota funciona em alguns processos (processo-c,
     //    processo-d) e devolve javax.ejb.EJBException em outros (processo-a, processo-b) — com ou sem
     //    expand/interactives, inclusive sem query nenhuma. É falha DO PRODUTO para certos processos,
     //    não da chamada. Sem esta mensagem, o EJBException vazio manda o dev caçar erro no lugar errado.
     if (r && /EJBException/i.test(r.code || '')) {
       throw new Error(
         `activitiesResume(${processId} v${processVersion}): o servidor devolveu javax.ejb.EJBException. `
-        + 'Esta rota falha assim em ALGUNS processos, independente dos parâmetros (confirmado em produção '
-        + 'em data omitida). Não é erro da chamada. Alternativa: fluig_task_list / fluig_request_list '
+        + 'Esta rota falha assim em ALGUNS processos, independente dos parâmetros (confirmado em produção). Não é erro da chamada. Alternativa: fluig_task_list / fluig_request_list '
         + 'filtrando por processo, que dão a mesma leitura de "o que está parado onde".'
       );
     }
@@ -2036,7 +2035,7 @@ export class FluigClient {
 
   /**
    * P2#32 — Contrato (schema) de um DataServer do RM, ANTES de tentar gravar.
-   * Roda de dentro de um dataset (padrão do projeto), via ServiceManager → wsDataServer.getSchema.
+   * Roda de dentro de um dataset (padrão de datasets customizados), via ServiceManager → wsDataServer.getSchema.
    * ⚠️ Grava um dataset para executar (mesma ressalva do dbQuery).
    */
   async rmDataServerSchema(dataServerName, contexto, opts = {}) {
